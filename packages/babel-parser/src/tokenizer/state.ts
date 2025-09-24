@@ -147,6 +147,9 @@ export default class State {
   // Used to signal to callers of `readWord1` whether the word
   // contained any escape sequences. This is needed because words with
   // escape sequences must not be interpreted as keywords.
+  // 用于向调用 `readWord1` 的程序发出信号，表明该单词是否
+  // 包含任何转义序列。这是必要的，因为某些单词中存在此类序列。
+  // 转义序列不得被解读为关键字。
   @bit accessor containsEsc = false;
 
   // Used to track invalid escape sequences in template literals,

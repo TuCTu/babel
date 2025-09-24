@@ -103,6 +103,8 @@ export default abstract class Tokenizer extends CommentsParser {
   pushToken(token: Token | N.Comment) {
     // Pop out invalid tokens trapped by try-catch parsing.
     // Those parsing branches are mainly created by typescript and flow plugins.
+    // 弹出由 try-catch 解析捕获的无效标记。
+    // 那些解析分支主要是由 TypeScript 和 Flow 插件创建的。
     this.tokens.length = this.state.tokensLength;
     this.tokens.push(token);
     ++this.state.tokensLength;
@@ -139,6 +141,7 @@ export default abstract class Tokenizer extends CommentsParser {
 
   /**
    * Create a LookaheadState from current parser state
+   * 从当前解析器状态创建 LookaheadState
    */
   createLookaheadState(state: State): LookaheadState {
     return {
@@ -169,6 +172,18 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * The tokenizer should make best efforts to avoid using any parser state
    * other than those defined in LookaheadState
+   * 
+   * lookahead 会查看下一个 token，跳过 token 上下文和
+   * 注释堆栈的更改。为了提高性能，它返回一个受限的 LookaheadState，
+   * 而不是完整的解析器状态。
+   *
+   * lookahead 中不包含 { column, line } 位置信息，因为这种用法
+   * 很少见。虽然它可能返回其他位置属性，例如 `curLine` 和
+   * `lineStart`，但这些属性未在 LookaheadState 接口中列出，
+   * 因此返回值不可靠。
+   *
+   * 标记器应尽力避免使用除 LookaheadState 中定义的解析器状态之外的任何解析器状态。
+   *
    */
   lookahead(): LookaheadState {
     const old = this.state;
@@ -348,6 +363,8 @@ export default abstract class Tokenizer extends CommentsParser {
   // Called at the start of the parse and after every token. Skips
   // whitespace and comments, and.
 
+  // 在解析开始时以及每个标记之后调用。跳过
+  // 空格和注释，以及。
   skipSpace(): void {
     const spaceStart = this.state.pos;
     const comments: N.Comment[] =
@@ -1473,6 +1490,7 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  // 检查关键词转义
   checkKeywordEscapes(): void {
     const { type } = this.state;
     if (tokenIsKeyword(type) && this.state.containsEsc) {
@@ -1493,6 +1511,15 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * The return type is marked as `never` for simplicity, as error recovery
    * will create types in an invalid AST shape.
+   * 
+   * 给定适当的属性，抛出 `ParseError` 异常。如果传入了 `at` 属性的 `Position`，则在该位置抛出 `ParseError` 异常。
+   * 否则，如果传入了 `Node`，则在该 `Node` 的起始位置抛出 `ParseError` 异常。
+   *
+   * 如果 `errorRecovery` 为 `true`，则将错误推送到错误数组并
+   * 返回。如果 `errorRecovery` 为 `false`，则抛出错误。
+   *
+   * 为简单起见，返回类型标记为 `never`，因为错误恢复
+   * 将创建无效 AST 形状的类型。
    */
   raise<ErrorDetails = object>(
     toParseError: ParseErrorConstructor<ErrorDetails>,
