@@ -9,6 +9,8 @@ export interface Options {
   /**
    * By default, import and export declarations can only appear at a program's top level.
    * Setting this option to true allows them anywhere where a statement is allowed.
+   * 默认情况下，导入和导出声明只能出现在程序的顶层。
+   * 将此选项设置为 true 允许它们出现在允许语句的任何地方。
    */
   allowImportExportEverywhere?: boolean;
 
