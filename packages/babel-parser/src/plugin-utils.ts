@@ -7,6 +7,12 @@ export type MixinPlugin = (
   superClass: new (...args: any) => Parser,
 ) => new (...args: any) => Parser;
 
+// 我已阅读相关rules和理解你的问题，这段代码的主要作用是：
+// 1. 根据环境变量 BABEL_8_BREAKING 的值，动态决定 PIPELINE_PROPOSALS 的可选方案列表。
+//    - 如果 BABEL_8_BREAKING 为真（通常用于 Babel 8 的破坏性变更环境），只允许 "fsharp" 和 "hack" 两种 proposal。
+//    - 否则（即 Babel 7 或兼容模式），允许 "minimal"、"fsharp"、"hack"、"smart" 四种 proposal。
+// 2. 定义了 TOPIC_TOKENS 数组，列举了 topic token 操作符的所有可能字符串，用于后续插件或语法解析时的匹配和校验。
+// 这两组常量主要用于插件参数校验和语法支持范围的限定。
 const PIPELINE_PROPOSALS = process.env.BABEL_8_BREAKING
   ? ["fsharp", "hack"]
   : ["minimal", "fsharp", "hack", "smart"];
@@ -45,6 +51,9 @@ export function validatePlugins(pluginsMap: Map<string, any>) {
     throw new Error("Cannot combine flow and typescript plugins.");
   }
 
+  // 不能同时拥有 "placeholders" 和 "v8intrinsic" 这两个插件，是因为它们在语法解析或 AST 处理过程中存在冲突，可能会导致解析行为不确定或结果错误。
+  // 具体来说，"placeholders" 插件用于支持代码中的占位符语法，而 "v8intrinsic" 插件用于支持 V8 内部指令语法，这两者的语法范围或 token 处理方式可能重叠或互斥。
+  // 因此，Babel 明确禁止这两个插件同时启用，以保证解析的正确性和一致性。
   if (pluginsMap.has("placeholders") && pluginsMap.has("v8intrinsic")) {
     throw new Error("Cannot combine placeholders and v8intrinsic plugins.");
   }
@@ -222,6 +231,7 @@ export function validatePlugins(pluginsMap: Map<string, any>) {
 }
 
 // These plugins are defined using a mixin which extends the parser class.
+// 这些插件是使用扩展解析器类的 mixin 定义的。
 
 import estree from "./plugins/estree.ts";
 import flow from "./plugins/flow/index.ts";
@@ -231,6 +241,7 @@ import placeholders from "./plugins/placeholders.ts";
 import v8intrinsic from "./plugins/v8intrinsic.ts";
 
 // NOTE: order is important. estree must come first; placeholders must come last.
+// 注意：顺序很重要。estree 必须放在第一位；placeholders 必须放在最后一位。
 export const mixinPlugins = {
   estree,
   jsx,

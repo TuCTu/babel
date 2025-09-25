@@ -39,10 +39,20 @@ export default class BaseParser {
   // Comment store for Program.comments
   declare comments: Array<N.Comment>;
 
+  /**
+   * 将源代码中的位置（sourcePos）转换为包含起始偏移量（startIndex）的全局偏移位置。
+   * @param sourcePos 源代码中的相对位置
+   * @returns 加上起始偏移量后的全局偏移位置
+   */
   sourceToOffsetPos(sourcePos: number) {
     return sourcePos + this.startIndex;
   }
 
+  /**
+   * 将包含起始偏移量（startIndex）的全局偏移位置（offsetPos）转换为源代码中的相对位置。
+   * @param offsetPos 全局偏移位置（包含startIndex）
+   * @returns 源代码中的相对位置
+   */
   offsetToSourcePos(offsetPos: number) {
     return offsetPos - this.startIndex;
   }
@@ -51,6 +61,7 @@ export default class BaseParser {
   // (plugin name and options object). If an options object is given,
   // then each value is non-recursively checked for identity with that
   // plugin’s actual option value.
+  // 这个方法接受一个字符串（插件名称）或一个数组对（插件名称和选项对象）。如果给定一个选项对象，则每个值都非递归地检查与该插件的实际选项值是否相同。
   hasPlugin(pluginConfig: PluginConfig): boolean {
     if (typeof pluginConfig === "string") {
       return this.plugins.has(pluginConfig);
