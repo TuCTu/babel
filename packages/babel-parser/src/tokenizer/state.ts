@@ -60,7 +60,6 @@ import type { ParseError } from "../parse-error.ts";
 /**
  * 延迟处理的严格模式错误类型
  * 这些错误在解析时不会立即抛出，而是等到确定了严格模式状态后再决定是否报错
- * 
  */
 export type DeferredStrictError =
   | typeof Errors.StrictNumericEscape // 严格模式下的数字转义错误
