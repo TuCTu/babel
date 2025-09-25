@@ -1,3 +1,26 @@
+/**
+ * Expression Parser - Babel 解析器中的表达式解析核心模块
+ *
+ * 这个文件实现了 Babel 解析器中所有表达式的解析逻辑，是递归下降解析器的重要组成部分。
+ * 它负责将 JavaScript/TypeScript 表达式转换为对应的 AST 节点。
+ *
+ * ## 解析器设计原理
+ *
+ * ### 递归下降解析
+ * 递归下降解析器通过为所有语法元素定义函数来操作，并递归调用这些函数，
+ * 每个函数推进输入流并返回一个 AST 节点。构造的优先级（例如，`!x[1]`
+ * 意味着 `!(x[1])` 而不是 `(!x)[1]`）通过解析一元前缀操作符的解析器函数
+ * 首先被调用来处理，然后调用解析 `[]` 下标的函数——这样，它将接收已经
+ * 解析的 `x[1]` 节点，并将其包装在一元操作符节点中。
+ *
+ * ### 操作符优先级解析
+ * Acorn 使用操作符优先级解析器来处理二元操作符优先级，因为它比使用
+ * 上述技术更紧凑，后者使用不同的嵌套函数来为 JavaScript 定义的所有
+ * 十个二元优先级级别指定优先级。
+ *
+ * 参考链接: http://en.wikipedia.org/wiki/Operator-precedence_parser
+ */
+
 // A recursive descent parser operates by defining functions for all
 // syntactic elements, and recursively calling those, each function
 // advancing the input stream and returning an AST node. Precedence
@@ -66,6 +89,65 @@ import type Parser from "./index.ts";
 
 import { OptionFlags, type SourceType } from "../options.ts";
 
+/**
+ * ExpressionParser 类 - Babel 解析器中的表达式解析引擎
+ *
+ * 这个抽象类继承自 LValParser，是 Babel 解析器中专门处理表达式解析的核心组件。
+ * 它实现了完整的 JavaScript/TypeScript 表达式解析逻辑，包括：
+ *
+ * ## 核心功能
+ *
+ * ### 1. 基础表达式解析
+ * - 原子表达式：标识符、字面量、this、super 等
+ * - 复合表达式：函数调用、成员访问、数组/对象字面量
+ * - 模板字符串：模板字面量和标签模板表达式
+ *
+ * ### 2. 操作符处理
+ * - 一元操作符：+、-、!、~、typeof、delete、await、yield 等
+ * - 二元操作符：算术、比较、逻辑、位运算操作符
+ * - 赋值操作符：=、+=、-= 等复合赋值
+ * - 三元条件操作符：? : 表达式
+ *
+ * ### 3. 现代 JavaScript 特性
+ * - 箭头函数：() => {} 语法解析和歧义处理
+ * - 异步函数：async/await 表达式
+ * - 生成器：yield 表达式和委托
+ * - 解构赋值：数组和对象解构模式
+ * - 扩展语法：... 展开和剩余参数
+ *
+ * ### 4. 高级语言特性
+ * - 可选链：?. 操作符
+ * - 空值合并：?? 操作符
+ * - 私有字段：#privateField 访问
+ * - 装饰器：@decorator 语法
+ * - Pipeline 操作符：|> 管道语法（提案）
+ *
+ * ## 解析流程
+ *
+ * 表达式解析遵循严格的优先级层次结构：
+ * 1. parseExpression() - 顶层入口，处理 in 操作符限制
+ * 2. parseExpressionBase() - 处理序列表达式（逗号分隔）
+ * 3. parseMaybeAssign() - 处理赋值表达式和 yield
+ * 4. parseMaybeConditional() - 处理三元条件表达式
+ * 5. parseExprOps() - 处理二元操作符（优先级解析）
+ * 6. parseExprAtom() - 处理原子表达式（字面量、标识符等）
+ *
+ * ## 错误处理与歧义解决
+ *
+ * - 使用 ExpressionErrors 收集模糊语法模式的错误
+ * - 支持回溯解析机制 (tryParse)
+ * - 智能处理箭头函数与括号表达式的歧义
+ * - 区分对象字面量与对象解构模式
+ * - 处理异步函数与标识符的歧义
+ *
+ * ## 插件化支持
+ *
+ * 通过插件系统支持实验性语法：
+ * - decorators：装饰器语法
+ * - pipelineOperator：管道操作符（多种提案）
+ * - functionBind：函数绑定操作符
+ * - recordAndTuple：记录和元组类型
+ */
 export default abstract class ExpressionParser extends LValParser {
   // Forward-declaration: defined in statement.js
   abstract parseBlock(
@@ -102,9 +184,26 @@ export default abstract class ExpressionParser extends LValParser {
   // For object literal, check if property __proto__ has been used more than once.
   // If the expression is a destructuring assignment, then __proto__ may appear
   // multiple times. Otherwise, __proto__ is a duplicated key.
+  // 对于对象字面量，检查属性 __proto__ 是否被多次使用。
+  // 如果表达式是解构赋值，那么 __proto__ 可能出现多次。否则，__proto__ 是重复键。
 
   // For record expression, check if property __proto__ exists
+  // 对于记录表达式，检查属性 __proto__ 是否存在
 
+  /**
+   * 检查 __proto__ 属性的使用情况
+   *
+   * 在对象字面量中，__proto__ 属性有特殊的语义规则：
+   * - 在普通对象字面量中，重复的 __proto__ 键是语法错误
+   * - 在解构赋值中，多个 __proto__ 是允许的
+   * - 在记录表达式中，__proto__ 属性是被禁止的
+   *
+   * @param prop - 要检查的对象成员或展开元素
+   * @param isRecord - 是否为记录表达式
+   * @param sawProto - 之前是否已经看到过 __proto__
+   * @param refExpressionErrors - 表达式错误引用（用于延迟错误报告）
+   * @returns 更新后的 sawProto 状态
+   */
   checkProto(
     prop: N.ObjectMember | N.SpreadElement,
     isRecord: boolean | undefined | null,
@@ -151,6 +250,16 @@ export default abstract class ExpressionParser extends LValParser {
     return sawProto;
   }
 
+  /**
+   * 判断是否应该退出下降解析
+   *
+   * 这个方法用于检测箭头函数表达式，当遇到箭头函数时应该停止继续下降解析。
+   * 这是处理箭头函数语法歧义的关键方法。
+   *
+   * @param expr - 当前解析的表达式或私有名称
+   * @param potentialArrowAt - 潜在箭头函数的位置
+   * @returns 如果是箭头函数表达式则返回 true
+   */
   shouldExitDescending(
     expr: N.Expression | N.PrivateName,
     potentialArrowAt: number,
@@ -162,6 +271,23 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // Convenience method to parse an Expression only
+  // 便捷方法，仅用于解析表达式
+  /**
+   * 获取单个表达式的便捷方法
+   *
+   * 这是一个独立的表达式解析入口点，用于解析单个表达式而不是完整的程序。
+   * 主要用于工具和测试场景，例如解析配置文件中的表达式。
+   *
+   * 解析流程：
+   * 1. 进入初始作用域
+   * 2. 获取下一个 token
+   * 3. 检查是否为空输入
+   * 4. 解析表达式
+   * 5. 确保到达文件末尾
+   * 6. 处理剩余注释并返回结果
+   *
+   * @returns 解析后的表达式节点，包含注释、错误和可选的 token 信息
+   */
   getExpression(this: Parser): N.Expression & N.ParserOutput {
     this.enterInitialScopes();
     this.nextToken();
@@ -186,12 +312,16 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // ### Expression parsing
+  // ### 表达式解析
 
   // These nest, from the most general expression type at the top to
   // 'atomic', nondivisible expression types at the bottom. Most of
   // the functions will simply let the function (s) below them parse,
   // and, *if* the syntactic construct they handle is present, wrap
   // the AST node that the inner parser gave them in another node.
+  // 这些方法从最通用的表达式类型嵌套到底部的"原子"不可分割的表达式类型。
+  // 大多数函数只是让它们下面的函数进行解析，如果它们处理的语法构造存在，
+  // 就将内部解析器给它们的 AST 节点包装在另一个节点中。
 
   // Parse a full expression.
   // - `disallowIn`
@@ -203,7 +333,26 @@ export default abstract class ExpressionParser extends LValParser {
   //   property assignment in contexts where both object expression
   //   and object pattern might appear (so it's possible to raise
   //   delayed syntax error at correct position).
+  // 解析完整表达式。
+  // - `disallowIn`
+  //   用于禁止 `in` 操作符（在 for 循环初始化表达式中）
+  //   当 `disallowIn` 为 true 时，生产参数 [In] 不存在。
 
+  // - `refExpressionErrors`
+  //   提供引用以存储简写属性赋值中的 '=' 操作符，在对象表达式
+  //   和对象模式都可能出现的上下文中（因此可以在正确位置引发
+  //   延迟语法错误）。
+
+  /**
+   * 解析完整表达式的主入口点
+   *
+   * 这是表达式解析的顶级方法，处理 `in` 操作符的上下文限制。
+   * 在某些语法上下文中（如 for 循环的初始化部分），`in` 操作符是被禁止的。
+   *
+   * @param disallowIn - 是否禁止 `in` 操作符
+   * @param refExpressionErrors - 表达式错误收集器，用于处理语法歧义
+   * @returns 解析后的表达式节点
+   */
   parseExpression(
     this: Parser,
     disallowIn?: boolean,
@@ -218,6 +367,20 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // https://tc39.es/ecma262/#prod-Expression
+  /**
+   * 解析表达式基础结构
+   *
+   * 这个方法处理序列表达式（逗号操作符分隔的表达式列表）。
+   * 如果只有一个表达式，直接返回该表达式；如果有多个表达式，
+   * 则创建一个 SequenceExpression 节点。
+   *
+   * 例如：
+   * - `a` -> 返回 `a`
+   * - `a, b, c` -> 返回 SequenceExpression { expressions: [a, b, c] }
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 解析后的表达式节点
+   */
   parseExpressionBase(
     this: Parser,
     refExpressionErrors?: ExpressionErrors,
@@ -237,6 +400,17 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // Set [~In] parameter for assignment expression
+  // 为赋值表达式设置 [~In] 参数
+  /**
+   * 在禁止 `in` 操作符的上下文中解析赋值表达式
+   *
+   * 这是 parseMaybeAssign 的包装器，用于禁止 `in` 操作符的上下文。
+   * 主要用于 for 循环的初始化表达式等场景。
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @param afterLeftParse - 左侧解析后的回调函数
+   * @returns 解析后的表达式节点
+   */
   parseMaybeAssignDisallowIn(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -248,6 +422,17 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // Set [+In] parameter for assignment expression
+  // 为赋值表达式设置 [+In] 参数
+  /**
+   * 在允许 `in` 操作符的上下文中解析赋值表达式
+   *
+   * 这是 parseMaybeAssign 的包装器，用于允许 `in` 操作符的上下文。
+   * 这是大多数表达式解析场景中的默认行为。
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @param afterLeftParse - 左侧解析后的回调函数
+   * @returns 解析后的表达式节点
+   */
   parseMaybeAssignAllowIn(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -260,6 +445,15 @@ export default abstract class ExpressionParser extends LValParser {
 
   // This method is only used by
   // the typescript and flow plugins.
+  // 这个方法仅被 TypeScript 和 Flow 插件使用。
+  /**
+   * 设置可选参数错误位置
+   *
+   * 这个方法专门用于 TypeScript 和 Flow 插件，用于记录可选参数
+   * 语法错误的位置，以便后续进行准确的错误报告。
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   */
   setOptionalParametersError(refExpressionErrors: ExpressionErrors) {
     refExpressionErrors.optionalParametersLoc = this.state.startLoc;
   }
@@ -267,6 +461,29 @@ export default abstract class ExpressionParser extends LValParser {
   // Parse an assignment expression. This includes applications of
   // operators like `+=`.
   // https://tc39.es/ecma262/#prod-AssignmentExpression
+  // 解析赋值表达式。这包括像 `+=` 这样的操作符的应用。
+  /**
+   * 解析赋值表达式（可能包含 yield）
+   *
+   * 这是表达式解析层次结构中的关键方法，处理：
+   * 1. yield 表达式（在生成器函数中）
+   * 2. 赋值表达式（=, +=, -=, 等等）
+   * 3. 条件表达式（作为备选）
+   *
+   * 赋值表达式的语法规则：
+   * - 简单赋值：left = right
+   * - 复合赋值：left += right, left -= right, 等等
+   * - 左侧必须是有效的赋值目标（LHS）
+   *
+   * 特殊处理：
+   * - 检测和处理箭头函数的潜在位置
+   * - 管理表达式错误的延迟报告
+   * - 处理 yield 表达式的上下文相关性
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @param afterLeftParse - 左侧解析后的回调函数
+   * @returns 解析后的表达式节点
+   */
   parseMaybeAssign(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -366,7 +583,22 @@ export default abstract class ExpressionParser extends LValParser {
 
   // Parse a ternary conditional (`?:`) operator.
   // https://tc39.es/ecma262/#prod-ConditionalExpression
+  // 解析三元条件（`?:`）操作符。
 
+  /**
+   * 解析条件表达式（三元操作符）
+   *
+   * 处理形如 `condition ? consequent : alternate` 的条件表达式。
+   * 这是 JavaScript 中唯一的三元操作符。
+   *
+   * 解析流程：
+   * 1. 首先解析二元表达式作为条件部分
+   * 2. 检查是否应该退出（箭头函数检测）
+   * 3. 如果遇到 `?`，则解析完整的条件表达式
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 解析后的表达式节点（可能是条件表达式）
+   */
   parseMaybeConditional(
     this: Parser,
     refExpressionErrors: ExpressionErrors,
@@ -382,6 +614,21 @@ export default abstract class ExpressionParser extends LValParser {
     return this.parseConditional(expr, startLoc, refExpressionErrors);
   }
 
+  /**
+   * 解析条件表达式的具体实现
+   *
+   * 当确定遇到 `?` token 时，解析完整的三元条件表达式。
+   *
+   * 语法结构：
+   * - test: 条件表达式
+   * - consequent: 条件为真时的表达式
+   * - alternate: 条件为假时的表达式
+   *
+   * @param expr - 已解析的条件表达式
+   * @param startLoc - 表达式开始位置
+   * @param refExpressionErrors - 表达式错误收集器（未使用）
+   * @returns 条件表达式节点或原表达式
+   */
   parseConditional(
     this: Parser,
     expr: N.Expression,
@@ -400,6 +647,15 @@ export default abstract class ExpressionParser extends LValParser {
     return expr;
   }
 
+  /**
+   * 解析一元表达式或私有名称
+   *
+   * 这个方法是一元表达式解析的入口点，同时处理私有字段访问。
+   * 私有字段（以 # 开头）只能在特定上下文中使用。
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 表达式节点或私有名称节点
+   */
   parseMaybeUnaryOrPrivate(
     this: Parser,
     refExpressionErrors?: ExpressionErrors,
@@ -411,7 +667,24 @@ export default abstract class ExpressionParser extends LValParser {
 
   // Start the precedence parser.
   // https://tc39.es/ecma262/#prod-ShortCircuitExpression
+  // 开始优先级解析器。
 
+  /**
+   * 开始操作符优先级解析
+   *
+   * 这是操作符优先级解析器的入口点，处理所有二元操作符的优先级关系。
+   * 使用递归下降结合操作符优先级的混合方法来正确处理操作符结合性和优先级。
+   *
+   * 处理的操作符包括：
+   * - 算术操作符：+, -, *, /, %, **
+   * - 比较操作符：<, >, <=, >=, ==, !=, ===, !==
+   * - 逻辑操作符：&&, ||, ??
+   * - 位运算操作符：&, |, ^, <<, >>, >>>
+   * - 其他：in, instanceof, |> (pipeline)
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 解析后的表达式节点
+   */
   parseExprOps(
     this: Parser,
     refExpressionErrors: ExpressionErrors,
@@ -432,7 +705,33 @@ export default abstract class ExpressionParser extends LValParser {
   // `minPrec` provides context that allows the function to stop and
   // defer further parser to one of its callers when it encounters an
   // operator that has a lower precedence than the set it is parsing.
+  // 使用操作符优先级解析算法解析二元操作符。`left` 是操作符的左侧。
+  // `minPrec` 提供上下文，当遇到优先级低于正在解析的集合的操作符时，
+  // 允许函数停止并将进一步的解析推迟给它的调用者之一。
 
+  /**
+   * 解析二元操作符表达式
+   *
+   * 这是操作符优先级解析算法的核心实现。使用最小优先级来决定何时停止解析
+   * 并返回到上级调用者。这种方法能正确处理操作符的结合性和优先级。
+   *
+   * 算法原理：
+   * 1. 检查当前操作符的优先级是否高于最小优先级
+   * 2. 如果是，则消费该操作符并解析右侧表达式
+   * 3. 递归调用自身处理更高优先级的操作符
+   * 4. 处理特殊操作符（如 pipeline、逻辑操作符）的特殊语义
+   *
+   * 特殊处理：
+   * - 私有字段的 `in` 操作符检查
+   * - Pipeline 操作符的插件支持
+   * - 逻辑操作符与空值合并操作符的混合检查
+   * - 右结合性操作符的处理
+   *
+   * @param left - 左侧表达式或私有名称
+   * @param leftStartLoc - 左侧表达式的开始位置
+   * @param minPrec - 最小优先级阈值
+   * @returns 解析后的表达式节点
+   */
   parseExprOp(
     this: Parser,
     left: N.Expression | N.PrivateName,
@@ -532,7 +831,22 @@ export default abstract class ExpressionParser extends LValParser {
 
   // Helper function for `parseExprOp`. Parse the right-hand side of binary-
   // operator expressions, then apply any operator-specific functions.
+  // `parseExprOp` 的辅助函数。解析二元操作符表达式的右侧，然后应用任何操作符特定的函数。
 
+  /**
+   * 解析二元操作符表达式的右侧
+   *
+   * 这个方法处理二元操作符右侧表达式的解析，并应用操作符特定的处理逻辑。
+   * 主要用于处理需要特殊语义的操作符，如 pipeline 操作符。
+   *
+   * 特殊操作符处理：
+   * - Pipeline 操作符 (|>)：根据不同提案（hack、fsharp、smart）应用不同的解析逻辑
+   * - 其他操作符：使用标准的右侧表达式解析
+   *
+   * @param op - 当前操作符类型
+   * @param prec - 操作符优先级
+   * @returns 解析后的右侧表达式
+   */
   parseExprOpRightExpr(
     this: Parser,
     op: TokenType,
@@ -577,7 +891,22 @@ export default abstract class ExpressionParser extends LValParser {
 
   // Helper function for `parseExprOpRightExpr`. Parse the right-hand side of
   // binary-operator expressions without applying any operator-specific functions.
+  // `parseExprOpRightExpr` 的辅助函数。解析二元操作符表达式的右侧，不应用任何操作符特定的函数。
 
+  /**
+   * 解析二元操作符表达式的基础右侧表达式
+   *
+   * 这是最基本的右侧表达式解析方法，不应用任何操作符特定的处理逻辑。
+   * 它处理操作符的结合性（左结合或右结合），并递归调用操作符解析。
+   *
+   * 结合性处理：
+   * - 左结合操作符：使用相同的优先级继续解析
+   * - 右结合操作符：使用 prec - 1 来允许相同优先级的操作符继续解析
+   *
+   * @param op - 当前操作符类型
+   * @param prec - 操作符优先级
+   * @returns 解析后的右侧表达式
+   */
   parseExprOpBaseRightExpr(
     this: Parser,
     op: TokenType,
@@ -614,6 +943,14 @@ export default abstract class ExpressionParser extends LValParser {
     return body;
   }
 
+  /**
+   * 检查一元表达式后的指数操作符
+   *
+   * 在 JavaScript 中，一元操作符不能直接与指数操作符组合，
+   * 例如 `-2 ** 3` 是语法错误，必须写成 `(-2) ** 3` 或 `-(2 ** 3)`。
+   *
+   * @param node - 一元表达式或 await 表达式节点
+   */
   checkExponentialAfterUnary(
     node: N.AwaitExpression | Undone<N.UnaryExpression>,
   ) {
@@ -624,6 +961,26 @@ export default abstract class ExpressionParser extends LValParser {
 
   // Parse unary operators, both prefix and postfix.
   // https://tc39.es/ecma262/#prod-UnaryExpression
+  // 解析一元操作符，包括前缀和后缀。
+
+  /**
+   * 解析一元表达式
+   *
+   * 处理所有类型的一元操作符，包括：
+   * - 前缀一元操作符：+, -, !, ~, typeof, void, delete, throw
+   * - await 表达式（在异步上下文中）
+   * - 更新表达式：++, --（前缀和后缀）
+   *
+   * 特殊处理：
+   * - await 表达式的上下文检查
+   * - delete 操作符在严格模式下的限制
+   * - throw 表达式需要插件支持
+   * - 指数操作符与一元操作符的优先级冲突检查
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @param sawUnary - 是否已经遇到一元操作符（用于嵌套检查）
+   * @returns 解析后的表达式节点
+   */
   parseMaybeUnary(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -1084,6 +1441,8 @@ export default abstract class ExpressionParser extends LValParser {
   // expression, an expression started by a keyword like `function` or
   // `new`, or an expression wrapped in punctuation like `()`, `[]`,
   // or `{}`.
+  // 解析原子表达式 — 要么是作为表达式的单个 token，要么是由像 `function` 或
+  // `new` 这样的关键字开始的表达式，或者是被像 `()`、`[]`、`{}` 这样的标点符号包装的表达式。
 
   // https://tc39.es/ecma262/#prod-PrimaryExpression
   // https://tc39.es/ecma262/#prod-AsyncArrowFunction
@@ -1092,6 +1451,48 @@ export default abstract class ExpressionParser extends LValParser {
   // Import
   // AsyncArrowFunction
 
+  /**
+   * 解析原子表达式（最基本的表达式单元）
+   *
+   * 这是表达式解析的最底层，处理不可再分割的表达式单元，包括：
+   *
+   * ## 字面量类型
+   * - 数字字面量：123, 3.14, 0xFF, 123n
+   * - 字符串字面量："hello", 'world', `template`
+   * - 布尔字面量：true, false
+   * - null 字面量：null
+   * - 正则表达式字面量：/pattern/flags
+   *
+   * ## 标识符和关键字
+   * - 标识符：variable, $var, _private
+   * - 特殊标识符：this, super
+   * - 上下文关键字：async, yield
+   *
+   * ## 复合表达式
+   * - 数组字面量：[1, 2, 3]
+   * - 对象字面量：{key: value}
+   * - 函数表达式：function() {}
+   * - 类表达式：class {}
+   * - 箭头函数：() => {}
+   * - 括号表达式：(expression)
+   *
+   * ## 现代语法特性
+   * - 模板字面量：`hello ${name}`
+   * - 导入表达式：import(module)
+   * - 元属性：import.meta, new.target
+   * - 私有字段：#privateField
+   * - 装饰器：@decorator
+   *
+   * ## 实验性特性（需要插件）
+   * - Do 表达式：do { ... }
+   * - Pipeline 主题引用：#, %, ^
+   * - 记录和元组：#{}, #[]
+   * - 绑定操作符：::method
+   * - 模块表达式：module { ... }
+   *
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 解析后的原子表达式节点
+   */
   parseExprAtom(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -1755,6 +2156,30 @@ export default abstract class ExpressionParser extends LValParser {
   }
 
   // https://tc39.es/ecma262/#prod-CoverParenthesizedExpressionAndArrowParameterList
+  /**
+   * 解析括号表达式并区分箭头函数参数
+   *
+   * 这是处理 JavaScript 中最复杂语法歧义之一的方法。括号内的内容可能是：
+   * 1. 普通的括号表达式：(a + b)
+   * 2. 箭头函数的参数列表：(a, b) => a + b
+   * 3. 序列表达式：(a, b, c)
+   *
+   * 歧义解决策略：
+   * - 先按照表达式列表解析括号内容
+   * - 解析完成后检查是否跟随箭头 (=>)
+   * - 如果是箭头函数，则转换为参数列表
+   * - 否则作为括号表达式或序列表达式处理
+   *
+   * 特殊处理：
+   * - 剩余参数 (...args)
+   * - 默认参数 (a = 1)
+   * - 解构参数 ({a, b})
+   * - 尾随逗号检查
+   * - 表达式作用域管理
+   *
+   * @param canBeArrow - 当前位置是否可能是箭头函数
+   * @returns 解析后的表达式节点
+   */
   parseParenAndDistinguishExpression(
     this: Parser,
     canBeArrow: boolean,
@@ -2489,6 +2914,28 @@ export default abstract class ExpressionParser extends LValParser {
   // parse an array literal or tuple literal
   // https://tc39.es/ecma262/#prod-ArrayLiteral
   // https://tc39.es/proposal-record-tuple/#prod-TupleLiteral
+  // 解析数组字面量或元组字面量
+
+  /**
+   * 解析类数组结构（数组字面量或元组字面量）
+   *
+   * 这个方法处理两种类似的语法结构：
+   * 1. 数组字面量：[1, 2, 3] 或 [a, , c]（允许空元素）
+   * 2. 元组字面量：#[1, 2, 3]（记录和元组提案，不允许空元素）
+   *
+   * 特性支持：
+   * - 展开元素：[...array]
+   * - 空元素：[1, , 3]（仅数组）
+   * - 嵌套结构：[[1, 2], [3, 4]]
+   * - 尾随逗号：[1, 2, 3,]
+   * - 解构模式：[a, b] = array
+   *
+   * @param close - 结束 token 类型（] 或其他）
+   * @param canBePattern - 是否可以作为解构模式
+   * @param isTuple - 是否为元组字面量
+   * @param refExpressionErrors - 表达式错误收集器
+   * @returns 数组表达式或元组表达式节点
+   */
   parseArrayLike(
     this: Parser,
     close: TokenType,
@@ -2520,6 +2967,38 @@ export default abstract class ExpressionParser extends LValParser {
   // Parse arrow function expression.
   // If the parameters are provided, they will be converted to an
   // assignable list.
+  // 解析箭头函数表达式。
+  // 如果提供了参数，它们将被转换为可赋值列表。
+
+  /**
+   * 解析箭头函数表达式
+   *
+   * 箭头函数是 ES6 引入的简洁函数语法，有以下特点：
+   * - 词法绑定 this
+   * - 不能作为构造函数
+   * - 没有 arguments 对象
+   * - 不能使用 yield（除非在异步生成器中）
+   *
+   * 语法形式：
+   * 1. 单参数：x => x * 2
+   * 2. 多参数：(x, y) => x + y
+   * 3. 无参数：() => 42
+   * 4. 表达式体：x => x * 2
+   * 5. 语句体：x => { return x * 2; }
+   * 6. 异步箭头函数：async x => await x
+   *
+   * 解析流程：
+   * 1. 设置函数作用域和参数标志
+   * 2. 处理参数转换（表达式 -> 绑定模式）
+   * 3. 解析函数体（表达式或块语句）
+   * 4. 处理异步上下文和 yield 限制
+   *
+   * @param node - 未完成的箭头函数节点
+   * @param params - 参数列表（可能包含表达式或模式）
+   * @param isAsync - 是否为异步箭头函数
+   * @param trailingCommaLoc - 尾随逗号位置（用于错误报告）
+   * @returns 完成的箭头函数表达式节点
+   */
   parseArrowExpression(
     this: Parser,
     node: Undone<N.ArrowFunctionExpression>,

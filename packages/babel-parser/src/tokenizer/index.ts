@@ -64,6 +64,9 @@ const VALID_REGEX_FLAGS = new Set([
 // Object type used to represent tokens. Note that normally, tokens
 // simply exist as properties on the parser object. This is only
 // used for the onToken callback and the external tokenizer.
+// 用于表示标记的对象类型。注意，通常情况下，标记
+// 仅作为解析器对象的属性存在。这仅
+// 用于 onToken 回调和外部标记器。
 
 export class Token {
   constructor(state: State) {
@@ -84,12 +87,89 @@ export class Token {
 
 // ## Tokenizer
 
+/**
+ * Tokenizer 类是 Babel 解析器中的核心词法分析器，继承自 CommentsParser。
+ * 主要作用是将JavaScript/TypeScript源代码字符串转换为一系列结构化的 Token（标记），
+ * 为后续的语法分析（Parser）提供基础数据。
+ *
+ * ## 核心功能
+ *
+ * ### 1. 词法分析（Lexical Analysis）
+ * 将源代码字符流转换为有意义的 Token 序列
+ *
+ * ### 2. Token 类型识别与分类
+ * 识别并分类各种语言元素：
+ * - 标识符和关键字：变量名、函数名、if、for、const等
+ * - 字面量：数字、字符串、模板字符串、正则表达式、BigInt
+ * - 操作符：算术、逻辑、比较、赋值操作符
+ * - 分隔符：括号、花括号、方括号、逗号、分号等
+ * - 特殊Token：EOF、JSX相关、装饰器、私有字段等
+ *
+ * ### 3. 高级语言特性支持
+ * 处理现代JavaScript/TypeScript的复杂语法：
+ * - 模板字符串
+ * - BigInt 数字字面量
+ * - 私有字段标识符
+ * - 可选链操作符
+ * - 管道操作符等
+ *
+ * ### 4. 注释与空白处理
+ * 继承自 CommentsParser，能够：
+ * - 跳过空白字符：空格、制表符、换行符
+ * - 处理注释：单行注释、多行注释
+ * - 保留注释信息：将注释关联到相应的AST节点
+ * - 处理特殊注释：HTML风格注释、shebang等
+ *
+ * ### 5. 位置追踪与错误处理
+ * 精确追踪每个Token在源码中的位置：
+ * - 行号和列号：记录每个Token的确切位置
+ * - 源码偏移：记录字符在源码中的绝对位置
+ * - 错误恢复：遇到语法错误时能够继续解析
+ * - 错误定位：提供准确的错误位置信息
+ *
+ * ### 6. Lookahead 机制
+ * 提供预见功能，不修改当前状态的情况下查看下一个Token
+ *
+ * ### 7. 上下文感知解析
+ * 根据不同语法上下文调整Token解析行为：
+ * - JSX上下文：识别JSX标签和属性
+ * - 模板上下文：处理模板字符串内的表达式
+ * - 正则表达式上下文：区分除号和正则表达式
+ * - 类型注解上下文：TypeScript类型解析
+ *
+ * ## 解析流程
+ *
+ * 1. 字符读取：从源码中逐字符读取
+ * 2. 模式匹配：根据当前字符确定Token类型
+ * 3. 状态追踪：维护解析状态（位置、上下文等）
+ * 4. Token生成：创建包含类型、值、位置信息的Token
+ * 5. 注释处理：识别并正确关联注释
+ * 6. 错误检测：发现并报告词法错误
+ *
+ * ## 在Babel生态中的作用
+ *
+ * 作为源码到AST转换流程的第一步：
+ * - 语法分析基础：为Parser提供结构化的Token序列
+ * - 工具支持：为IDE、格式化工具、语法高亮等提供词法信息
+ * - 插件系统：支持各种JavaScript提案和方言的扩展解析
+ * - 性能优化：通过高效的字符处理和状态管理确保解析速度
+ *
+ * 核心价值：将非结构化的文本源码转换为结构化的Token流，
+ * 是所有后续语法分析、代码转换和静态分析的基础。
+ */
 export default abstract class Tokenizer extends CommentsParser {
   isLookahead: boolean;
 
   // Token store.
   tokens: Array<Token | N.Comment> = [];
 
+  /**
+   * Tokenizer 构造函数
+   * 初始化词法分析器的状态和输入源码
+   *
+   * @param options 解析选项配置
+   * @param input 要解析的源代码字符串
+   */
   constructor(options: Options, input: string) {
     super();
     this.state = new State();
@@ -100,6 +180,12 @@ export default abstract class Tokenizer extends CommentsParser {
     this.isLookahead = false;
   }
 
+  /**
+   * 将 token 推入 tokens 数组
+   * 在插件的 try-catch 解析过程中，可能会产生无效的 token，此方法会清理这些无效 token
+   *
+   * @param token 要推入的 token 或注释对象
+   */
   pushToken(token: Token | N.Comment) {
     // Pop out invalid tokens trapped by try-catch parsing.
     // Those parsing branches are mainly created by typescript and flow plugins.
@@ -110,8 +196,10 @@ export default abstract class Tokenizer extends CommentsParser {
     ++this.state.tokensLength;
   }
 
-  // Move to the next token
-
+  /**
+   * 移动到下一个 token
+   * 完成当前 token 的处理并准备解析下一个 token
+   */
   next(): void {
     this.checkKeywordEscapes();
     if (this.optionFlags & OptionFlags.Tokens) {
@@ -123,6 +211,14 @@ export default abstract class Tokenizer extends CommentsParser {
     this.nextToken();
   }
 
+  /**
+   * 尝试"消费"指定类型的 token
+   * 如果当前 token 匹配指定类型，则移动到下一个 token 并返回 true
+   * 否则不做任何操作并返回 false
+   *
+   * @param type 期望的 token 类型
+   * @returns 是否成功消费了指定类型的 token
+   */
   eat(type: TokenType): boolean {
     if (this.match(type)) {
       this.next();
@@ -134,6 +230,7 @@ export default abstract class Tokenizer extends CommentsParser {
 
   /**
    * Whether current token matches given type
+   * 当前令牌是否匹配给定类型
    */
   match(type: TokenType): boolean {
     return this.state.type === type;
@@ -172,10 +269,8 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * The tokenizer should make best efforts to avoid using any parser state
    * other than those defined in LookaheadState
-   * 
-   * lookahead 会查看下一个 token，跳过 token 上下文和
-   * 注释堆栈的更改。为了提高性能，它返回一个受限的 LookaheadState，
-   * 而不是完整的解析器状态。
+   *
+   * lookahead 会查看下一个 token，跳过 token 上下文和注释堆栈的更改。为了提高性能，它返回一个受限的 LookaheadState，而不是完整的解析器状态。
    *
    * lookahead 中不包含 { column, line } 位置信息，因为这种用法
    * 很少见。虽然它可能返回其他位置属性，例如 `curLine` 和
@@ -199,19 +294,37 @@ export default abstract class Tokenizer extends CommentsParser {
     return curr;
   }
 
+  /**
+   * 获取下一个 token 的开始位置（跳过空白字符）
+   * @returns 下一个 token 的开始位置
+   */
   nextTokenStart(): number {
     return this.nextTokenStartSince(this.state.pos);
   }
 
+  /**
+   * 从指定位置开始，获取下一个 token 的开始位置（跳过空白字符）
+   * @param pos 开始搜索的位置
+   * @returns 下一个 token 的开始位置
+   */
   nextTokenStartSince(pos: number): number {
     skipWhiteSpace.lastIndex = pos;
     return skipWhiteSpace.test(this.input) ? skipWhiteSpace.lastIndex : pos;
   }
 
+  /**
+   * 前瞻下一个非空白字符的字符代码
+   * @returns 下一个非空白字符的字符代码
+   */
   lookaheadCharCode(): number {
     return this.lookaheadCharCodeSince(this.state.pos);
   }
 
+  /**
+   * 从指定位置开始，前瞻下一个非空白字符的字符代码
+   * @param pos 开始搜索的位置
+   * @returns 下一个非空白字符的字符代码
+   */
   lookaheadCharCodeSince(pos: number): number {
     return this.input.charCodeAt(this.nextTokenStartSince(pos));
   }
@@ -221,11 +334,20 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * @returns {number} position of the next token start or line break, whichever is seen first.
    * @memberof Tokenizer
+   * 获取行内下一个 token 的开始位置
+   * 类似于 nextToken，但遇到换行符时会停止
+   *
+   * @returns 下一个 token 开始位置或换行符位置，以先遇到的为准
    */
   nextTokenInLineStart(): number {
     return this.nextTokenInLineStartSince(this.state.pos);
   }
 
+  /**
+   * 从指定位置开始，获取行内下一个 token 的开始位置
+   * @param pos 开始搜索的位置
+   * @returns 下一个 token 开始位置或换行符位置，以先遇到的为准
+   */
   nextTokenInLineStartSince(pos: number): number {
     skipWhiteSpaceInLine.lastIndex = pos;
     return skipWhiteSpaceInLine.test(this.input)
@@ -239,11 +361,25 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * @returns {number} char code of the next token start or line break, whichever is seen first.
    * @memberof Tokenizer
+   * 前瞻行内字符代码
+   * 类似于 lookaheadCharCode，但如果在下一个 token 之前遇到换行符，会返回换行符的字符代码
+   *
+   * @returns 下一个 token 开始处或换行符的字符代码，以先遇到的为准
    */
   lookaheadInLineCharCode(): number {
     return this.input.charCodeAt(this.nextTokenInLineStart());
   }
 
+  /**
+   * 获取指定位置的 Unicode 码点
+   * 正确处理 Unicode 代理对（surrogate pairs），支持超出基本多文种平面的字符
+   *
+   * 实现基于 V8 源码，为了性能优化而重新实现
+   * 因为大部分输入都是 ASCII 字符，内联的 charCodeAt 性能更好
+   *
+   * @param pos 字符位置
+   * @returns Unicode 码点值
+   */
   codePointAtPos(pos: number): number {
     // The implementation is based on
     // https://source.chromium.org/chromium/chromium/src/+/master:v8/src/builtins/builtins-string-gen.cc;l=1455;drc=221e331b49dfefadbc6fa40b0c68e6f97606d0b3;bpv=0;bpt=1
@@ -262,6 +398,13 @@ export default abstract class Tokenizer extends CommentsParser {
   // Toggle strict mode. Re-reads the next number or string to please
   // pedantic tests (`"use strict"; 010;` should fail).
 
+  /**
+   * 切换严格模式
+   * 重新读取下一个数字或字符串以满足严格的测试要求
+   * （例如在严格模式下 `"use strict"; 010;` 应该失败）
+   *
+   * @param strict 是否启用严格模式
+   */
   setStrict(strict: boolean): void {
     this.state.strict = strict;
     if (strict) {
@@ -276,11 +419,21 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 获取当前的 token 上下文
+   * token 上下文用于处理不同语法环境下的 token 解析规则
+   *
+   * @returns 当前的 token 上下文
+   */
   curContext(): TokContext {
     return this.state.context[this.state.context.length - 1];
   }
 
-  // Read a single token, updating the parser object's token-related properties.
+  /**
+   * Read a single token, updating the parser object's token-related properties.
+   * 读取单个 token，更新解析器对象的 token 相关属性
+   * 这是词法分析的核心方法，负责从字符流中识别和创建 token
+   */
   nextToken(): void {
     this.skipSpace();
     this.state.start = this.state.pos;
@@ -296,6 +449,14 @@ export default abstract class Tokenizer extends CommentsParser {
   // Skips a block comment, whose end is marked by commentEnd.
   // *-/ is used by the Flow plugin, when parsing block comments nested
   // inside Flow comments.
+
+  /**
+   * 跳过块注释，块注释的结束由 commentEnd 标记
+   * "star-slash" 用于 Flow 插件，当解析嵌套在 Flow 注释内的块注释时使用
+   *
+   * @param commentEnd 注释结束标记，可以是 "star-slash" 或 "star-dash-slash"
+   * @returns 如果不是前瞻模式，返回注释对象，否则返回 undefined
+   */
   skipBlockComment(commentEnd: "*/" | "*-/"): N.CommentBlock | undefined {
     let startLoc;
     if (!this.isLookahead) startLoc = this.state.curPosition();
@@ -331,6 +492,12 @@ export default abstract class Tokenizer extends CommentsParser {
     return comment;
   }
 
+  /**
+   * 跳过行注释
+   *
+   * @param startSkip 要跳过的起始字符数（通常是双斜杠的长度 2）
+   * @returns 如果不是前瞻模式，返回注释对象，否则返回 undefined
+   */
   skipLineComment(startSkip: number): N.CommentLine | undefined {
     const start = this.state.pos;
     let startLoc;
@@ -480,11 +647,19 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
-  // Called at the end of every token. Sets `end`, `val`, and
-  // maintains `context` and `canStartJSXElement`, and skips the space after
-  // the token, so that the next one's `start` will point at the
-  // right position.
-
+  /**
+   * Called at the end of every token. Sets `end`, `val`, and
+   * maintains `context` and `canStartJSXElement`, and skips the space after
+   * the token, so that the next one's `start` will point at the
+   * right position.
+   *
+   * 在每个 token 结束时调用，设置 token 的 `end`、`val` 属性，
+   * 维护 `context` 和 `canStartJSXElement`，并跳过 token 后的空白，
+   * 使下一个 token 的 `start` 指向正确位置
+   *
+   * @param type token 类型
+   * @param val token 的值（可选）
+   */
   finishToken(type: TokenType, val?: any): void {
     this.state.end = this.state.pos;
     this.state.endLoc = this.state.curPosition();
@@ -497,6 +672,12 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 替换当前 token 的类型
+   * 这在需要重新解释已解析的 token 时很有用
+   *
+   * @param type 新的 token 类型
+   */
   replaceToken(type: TokenType): void {
     this.state.type = type;
     // @ts-expect-error the prevType of updateContext is required
@@ -514,6 +695,11 @@ export default abstract class Tokenizer extends CommentsParser {
   // All in the name of speed.
 
   // number sign is "#"
+
+  /**
+   * number sign is "#"
+   * 读取数字符号 "#" 开头的 token，处理私有字段、记录和元组语法、以及 shebang 等情况
+   */
   readToken_numberSign(): void {
     if (this.state.pos === 0 && this.readToken_interpreter()) {
       return;
@@ -570,6 +756,10 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取点号 "." 开头的 token
+   * 处理小数点、省略号 "..." 等情况
+   */
   readToken_dot(): void {
     const next = this.input.charCodeAt(this.state.pos + 1);
     if (next >= charCodes.digit0 && next <= charCodes.digit9) {
@@ -589,6 +779,10 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取斜杠开头的 token
+   * 处理除法操作符和除法赋值操作符
+   */
   readToken_slash(): void {
     const next = this.input.charCodeAt(this.state.pos + 1);
     if (next === charCodes.equalsTo) {
@@ -598,6 +792,12 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取 shebang 行（解释器指令）
+   * 例如：#!/usr/bin/env node
+   *
+   * @returns 是否成功读取了 shebang 行
+   */
   readToken_interpreter(): boolean {
     if (this.state.pos !== 0 || this.length < 2) return false;
 
@@ -618,6 +818,12 @@ export default abstract class Tokenizer extends CommentsParser {
     return true;
   }
 
+  /**
+   * 读取乘法和取模操作符
+   * 处理星号、百分号、幂运算、赋值运算等操作符
+   *
+   * @param code 字符代码（星号 或 百分号）
+   */
   readToken_mult_modulo(code: number): void {
     // '%' or '*'
     let type = code === charCodes.asterisk ? tt.star : tt.modulo;
@@ -643,6 +849,12 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishOp(type, width);
   }
 
+  /**
+   * 读取管道和与符号操作符
+   * 处理竖线、与号、逻辑运算、赋值运算、管道运算等操作符
+   *
+   * @param code 字符代码（竖线 或 与号）
+   */
   readToken_pipe_amp(code: number): void {
     // '||' '&&' '||=' '&&='
     const next = this.input.charCodeAt(this.state.pos + 1);
@@ -711,6 +923,10 @@ export default abstract class Tokenizer extends CommentsParser {
     );
   }
 
+  /**
+   * 读取脱字符开头的 token
+   * 处理异或操作符、异或赋值、以及管道操作符提案中的双脱字符
+   */
   readToken_caret(): void {
     const next = this.input.charCodeAt(this.state.pos + 1);
 
@@ -745,6 +961,10 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取at符号开头的 token
+   * 处理装饰器符号和管道操作符提案中的双at符号
+   */
   readToken_atSign(): void {
     const next = this.input.charCodeAt(this.state.pos + 1);
 
@@ -764,6 +984,12 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取加减操作符
+   * 处理加号、减号、递增、递减、赋值运算等操作符
+   *
+   * @param code 字符代码（加号 或 减号）
+   */
   readToken_plus_min(code: number): void {
     // '+-'
     const next = this.input.charCodeAt(this.state.pos + 1);
@@ -780,6 +1006,10 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 读取小于号开头的 token
+   * 处理小于、小于等于、左移、左移赋值等操作符
+   */
   readToken_lt(): void {
     // '<'
     const { pos } = this.state;
@@ -803,6 +1033,10 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishOp(tt.lt, 1);
   }
 
+  /**
+   * 读取大于号开头的 token
+   * 处理大于、大于等于、右移、无符号右移、相应赋值等操作符
+   */
   readToken_gt(): void {
     // '>'
     const { pos } = this.state;
@@ -828,6 +1062,12 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishOp(tt.gt, 1);
   }
 
+  /**
+   * 读取等号和感叹号开头的 token
+   * 处理赋值、相等、严格相等、非运算、不等、严格不等、箭头函数等操作符
+   *
+   * @param code 字符代码（等号 或 感叹号）
+   */
   readToken_eq_excl(code: number): void {
     // '=!'
     const next = this.input.charCodeAt(this.state.pos + 1);
@@ -849,6 +1089,10 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishOp(code === charCodes.equalsTo ? tt.eq : tt.bang, 1);
   }
 
+  /**
+   * 读取问号开头的 token
+   * 处理三元操作符、空值合并、空值合并赋值、可选链等操作符
+   */
   readToken_question(): void {
     // '?'
     const next = this.input.charCodeAt(this.state.pos + 1);
@@ -874,6 +1118,20 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * This is the function that is called to fetch the next token. It
+   * is somewhat obscure, because it works in character codes rather
+   * than characters, and because operator parsing has been inlined
+   * into it.
+   *
+   * All in the name of speed.
+   *
+   * 根据字符代码获取对应的 token，这是词法分析的核心分发方法。
+   * 它直接使用字符代码而不是字符，并且将操作符解析内联到其中，
+   * 这些都是为了提高速度。
+   *
+   * @param code Unicode 字符代码
+   */
   getTokenFromCode(code: number): void {
     switch (code) {
       // The interpretation of a dot depends on whether it is followed
@@ -1081,12 +1339,23 @@ export default abstract class Tokenizer extends CommentsParser {
     );
   }
 
+  /**
+   * 完成操作符 token 的创建
+   * 提取指定长度的字符串作为 token 值并完成 token 创建
+   *
+   * @param type 操作符 token 类型
+   * @param size 操作符的字符长度
+   */
   finishOp(type: TokenType, size: number): void {
     const str = this.input.slice(this.state.pos, this.state.pos + size);
     this.state.pos += size;
     this.finishToken(type, str);
   }
 
+  /**
+   * 读取正则表达式字面量
+   * 解析正则表达式模式和修饰符，处理转义字符和字符类
+   */
   readRegexp(): void {
     const startLoc = this.state.startLoc;
     const start = this.state.start + 1;
@@ -1165,15 +1434,27 @@ export default abstract class Tokenizer extends CommentsParser {
     });
   }
 
-  // Read an integer in the given radix. Return null if zero digits
-  // were read, the integer value otherwise. When `len` is given, this
-  // will return `null` unless the integer has exactly `len` digits.
-  // When `forceLen` is `true`, it means that we already know that in case
-  // of a malformed number we have to skip `len` characters anyway, instead
-  // of bailing out early. For example, in "\u{123Z}" we want to read up to }
-  // anyway, while in "\u00Z" we will stop at Z instead of consuming four
-  // characters (and thus the closing quote).
-
+  /**
+   * Read an integer in the given radix. Return null if zero digits
+   * were read, the integer value otherwise. When `len` is given, this
+   * will return `null` unless the integer has exactly `len` digits.
+   * When `forceLen` is `true`, it means that we already know that in case
+   * of a malformed number we have to skip `len` characters anyway, instead
+   * of bailing out early. For example, in "\u{123Z}" we want to read up to }
+   * anyway, while in "\u00Z" we will stop at Z instead of consuming four
+   * characters (and thus the closing quote).
+   *
+   * 读取指定进制的整数。如果读取了0个数字则返回null，否则返回整数值。
+   * 当指定`len`时，除非整数恰好有`len`个数字，否则返回`null`。
+   * 当`forceLen`为`true`时，意味着在格式错误的数字情况下，我们仍需跳过`len`个字符，
+   * 而不是提前退出。例如，在"\u{123Z}"中我们想读到}，而在"\u00Z"中会在Z处停止。
+   *
+   * @param radix 进制（2、8、10、16等）
+   * @param len 预期的数字长度，如果指定则必须精确匹配
+   * @param forceLen 是否强制读取指定长度
+   * @param allowNumSeparator 是否允许数字分隔符
+   * @returns 解析出的整数值，如果读取了0个数字则返回null
+   */
   readInt(
     radix: number,
     len?: number,
@@ -1196,6 +1477,12 @@ export default abstract class Tokenizer extends CommentsParser {
     return n;
   }
 
+  /**
+   * 读取指定进制的数字字面量
+   * 处理 0x、0o、0b 等进制前缀的数字，以及 BigInt 后缀
+   *
+   * @param radix 进制（2、8、16）
+   */
   readRadixNumber(radix: number): void {
     const start = this.state.pos;
     const startLoc = this.state.curPosition();
@@ -1235,8 +1522,13 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishToken(tt.num, val);
   }
 
-  // Read an integer, octal integer, or floating-point number.
-
+  /**
+   * Read an integer, octal integer, or floating-point number.
+   * 读取整数、八进制整数或浮点数
+   * 处理各种数字格式：十进制、八进制、浮点数、科学计数法、BigInt、Decimal
+   *
+   * @param startsWithDot 是否以小数点开始（如 .5）
+   */
   readNumber(startsWithDot: boolean): void {
     const start = this.state.pos;
     const startLoc = this.state.curPosition();
@@ -1334,8 +1626,13 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishToken(tt.num, val);
   }
 
-  // Read a string value, interpreting backslash-escapes.
-
+  /**
+   * Read a string value, interpreting backslash-escapes.
+   * 读取字符串值，解释反斜杠转义序列
+   *
+   * @param throwOnInvalid 遇到无效码点时是否抛出错误
+   * @returns Unicode 码点值，如果无效则返回 null
+   */
   readCodePoint(throwOnInvalid: boolean): number | null {
     const { code, pos } = readCodePoint(
       this.input,
@@ -1349,6 +1646,12 @@ export default abstract class Tokenizer extends CommentsParser {
     return code;
   }
 
+  /**
+   * 读取字符串字面量
+   * 处理转义字符和多行字符串
+   *
+   * @param quote 引号字符代码（单引号或双引号）
+   */
   readString(quote: number): void {
     const { str, pos, curLine, lineStart } = readStringContents(
       quote === charCodes.quotationMark ? "double" : "single",
@@ -1364,7 +1667,10 @@ export default abstract class Tokenizer extends CommentsParser {
     this.finishToken(tt.string, str);
   }
 
-  // Reads template continuation `}...`
+  /**
+   * Reads template continuation `}...`
+   * 读取模板字符串的继续部分，用于处理模板字符串中表达式后的部分
+   */
   readTemplateContinuation(): void {
     if (!this.match(tt.braceR)) {
       this.unexpected(null, tt.braceR);
@@ -1374,7 +1680,10 @@ export default abstract class Tokenizer extends CommentsParser {
     this.readTemplateToken();
   }
 
-  // Reads template string tokens.
+  /**
+   * Reads template string tokens.
+   * 读取模板字符串 token，处理模板字符串的各个部分，包括开始、中间和结束部分
+   */
   readTemplateToken(): void {
     const opening = this.input[this.state.pos];
     const { str, firstInvalidLoc, pos, curLine, lineStart } =
@@ -1412,6 +1721,13 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 记录严格模式错误
+   * 在严格模式下立即抛出错误，否则暂存错误待后续处理
+   *
+   * @param toParseError 延迟的严格模式错误构造函数
+   * @param at 错误位置
+   */
   recordStrictModeErrors(toParseError: DeferredStrictError, at: Position) {
     const index = at.index;
 
@@ -1422,15 +1738,23 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
-  // Read an identifier, and return it as a string. Sets `this.state.containsEsc`
-  // to whether the word contained a '\u' escape.
-  //
-  // Incrementally adds only escaped chars, adding other chunks as-is
-  // as a micro-optimization.
-  //
-  // When `firstCode` is given, it assumes it is always an identifier start and
-  // will skip reading start position again
-
+  /**
+   * Read an identifier, and return it as a string. Sets `this.state.containsEsc`
+   * to whether the word contained a '\u' escape.
+   *
+   * Incrementally adds only escaped chars, adding other chunks as-is
+   * as a micro-optimization.
+   *
+   * When `firstCode` is given, it assumes it is always an identifier start and
+   * will skip reading start position again
+   *
+   * 读取标识符并返回字符串，设置 `this.state.containsEsc` 标记单词是否包含 '\u' 转义
+   * 为了微优化，只增量添加转义字符，其他块按原样添加
+   * 当提供 `firstCode` 时，假定它总是标识符开始，会跳过重新读取开始位置
+   *
+   * @param firstCode 第一个字符的 Unicode 码点（可选）
+   * @returns 读取到的标识符字符串
+   */
   readWord1(firstCode?: number): string {
     this.state.containsEsc = false;
     let word = "";
@@ -1475,9 +1799,13 @@ export default abstract class Tokenizer extends CommentsParser {
     return word + this.input.slice(chunkStart, this.state.pos);
   }
 
-  // Read an identifier or keyword token. Will check for reserved
-  // words when necessary.
-
+  /**
+   * Read an identifier or keyword token. Will check for reserved
+   * words when necessary.
+   * 读取标识符或关键字 token，必要时检查保留字，决定是创建关键字 token 还是标识符 token
+   *
+   * @param firstCode 第一个字符的 Unicode 码点（可选）
+   */
   readWord(firstCode?: number): void {
     const word = this.readWord1(firstCode);
     const type = keywordTypes.get(word);
@@ -1490,7 +1818,10 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
-  // 检查关键词转义
+  /**
+   * Check for escaped reserved words in keywords.
+   * 检查关键词中的转义保留字
+   */
   checkKeywordEscapes(): void {
     const { type } = this.state;
     if (tokenIsKeyword(type) && this.state.containsEsc) {
@@ -1511,7 +1842,7 @@ export default abstract class Tokenizer extends CommentsParser {
    *
    * The return type is marked as `never` for simplicity, as error recovery
    * will create types in an invalid AST shape.
-   * 
+   *
    * 给定适当的属性，抛出 `ParseError` 异常。如果传入了 `at` 属性的 `Position`，则在该位置抛出 `ParseError` 异常。
    * 否则，如果传入了 `Node`，则在该 `Node` 的起始位置抛出 `ParseError` 异常。
    *
@@ -1536,10 +1867,15 @@ export default abstract class Tokenizer extends CommentsParser {
   }
 
   /**
-   * If `errorRecovery` is `false`, this method behaves identically to `raise`.
-   * If `errorRecovery` is `true`, this method will first see if there is
-   * already an error stored at the same `Position`, and replaces it with the
-   * one generated here.
+   * 覆盖式抛出解析错误
+   * 如果 `errorRecovery` 为 `false`，此方法与 `raise` 完全相同
+   * 如果 `errorRecovery` 为 `true`，此方法会先检查相同位置是否已有错误，
+   * 如果有则用新生成的错误替换它
+   *
+   * @param toParseError 错误构造函数
+   * @param at 错误位置或节点
+   * @param details 错误详情
+   * @returns 解析错误对象
    */
   raiseOverwrite<ErrorDetails>(
     toParseError: ParseErrorConstructor<ErrorDetails>,
@@ -1561,11 +1897,22 @@ export default abstract class Tokenizer extends CommentsParser {
     return this.raise(toParseError, at, details);
   }
 
-  // updateContext is used by the jsx plugin
+  /**
+   * updateContext is used by the jsx plugin
+   * 更新 token 上下文，此方法由 JSX 插件使用，用于在不同 token 间维护正确的解析上下文
+   *
+   * @param prevType 前一个 token 的类型
+   */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   updateContext(prevType: TokenType): void {}
 
-  // Raise an unexpected token error. Can take the expected token type.
+  /**
+   * Raise an unexpected token error. Can take the expected token type.
+   * 抛出意外 token 错误
+   *
+   * @param loc 错误位置（可选，默认使用当前位置）
+   * @param type 期望的 token 类型（可选）
+   */
   unexpected(loc?: Position | null, type?: TokenType): void {
     throw this.raise(
       Errors.UnexpectedToken,
@@ -1576,6 +1923,14 @@ export default abstract class Tokenizer extends CommentsParser {
     );
   }
 
+  /**
+   * 期望特定插件已启用
+   * 如果插件未启用则抛出错误
+   *
+   * @param pluginName 插件名称
+   * @param loc 错误位置（可选）
+   * @returns 总是返回 true（如果没抛出错误）
+   */
   expectPlugin(pluginName: Plugin, loc?: Position): true {
     if (this.hasPlugin(pluginName)) {
       return true;
@@ -1590,6 +1945,12 @@ export default abstract class Tokenizer extends CommentsParser {
     );
   }
 
+  /**
+   * 期望插件列表中至少有一个插件已启用
+   * 如果没有任何一个插件启用则抛出错误
+   *
+   * @param pluginNames 插件名称数组
+   */
   expectOnePlugin(pluginNames: Plugin[]): void {
     if (!pluginNames.some(name => this.hasPlugin(name))) {
       throw this.raise(Errors.MissingOneOfPlugins, this.state.startLoc, {
@@ -1598,6 +1959,13 @@ export default abstract class Tokenizer extends CommentsParser {
     }
   }
 
+  /**
+   * 错误构建器
+   * 创建一个函数，该函数可以在指定位置构建并抛出指定类型的错误
+   *
+   * @param error 错误构造函数
+   * @returns 错误构建函数
+   */
   errorBuilder(error: ParseErrorConstructor<object>) {
     return (pos: number, lineStart: number, curLine: number) => {
       this.raise(error, buildPosition(pos, lineStart, curLine));

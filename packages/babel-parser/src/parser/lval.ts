@@ -1,3 +1,41 @@
+/**
+ * LVal（Left-hand side Value）解析器文件
+ *
+ * 这个文件是 Babel 解析器中专门处理左值（LVal）解析的核心模块。
+ * 左值是指可以出现在赋值表达式左侧的值，包括变量、解构模式、成员表达式等。
+ *
+ * ## 主要功能
+ *
+ * ### 1. 赋值模式转换
+ * - 将表达式转换为赋值模式（如将对象表达式转换为对象解构模式）
+ * - 处理数组解构、对象解构、剩余参数等复杂模式
+ * - 验证赋值目标的合法性
+ *
+ * ### 2. 绑定模式解析
+ * - 解析函数参数、变量声明中的绑定模式
+ * - 处理默认参数、剩余参数、解构参数
+ * - 支持 TypeScript 参数属性和装饰器
+ *
+ * ### 3. 模式验证
+ * - 检查左值的合法性（如不能对字面量赋值）
+ * - 验证严格模式下的标识符限制
+ * - 处理作用域绑定和名称冲突检查
+ *
+ * ### 4. 语法规范支持
+ * - 支持 ECMAScript 解构赋值规范
+ * - 处理剩余元素的位置限制
+ * - 支持可选链赋值等现代语法特性
+ *
+ * ## 在解析流程中的作用
+ *
+ * LValParser 作为解析器的重要组成部分，处理所有涉及赋值和绑定的语法结构：
+ * - 变量声明：`const [a, b] = array`
+ * - 函数参数：`function fn({x, y = 1}) {}`
+ * - 赋值表达式：`[a, b] = [1, 2]`
+ * - 解构赋值：`{x: newX} = obj`
+ * - 剩余参数：`function fn(...args) {}`
+ */
+
 import * as charCodes from "charcodes";
 import { tt, type TokenType } from "../tokenizer/types.ts";
 import type {
@@ -33,20 +71,60 @@ import type { ExpressionErrors } from "./util.ts";
 import { Errors, type LValAncestor } from "../parse-error.ts";
 import type Parser from "./index.ts";
 
+/**
+ * 递归解包括号表达式，获取真正的表达式内容
+ * 例如：((a)) -> a
+ *
+ * @param node 要解包的节点
+ * @returns 解包后的表达式节点
+ */
 const unwrapParenthesizedExpression = (node: Node): Node => {
   return node.type === "ParenthesizedExpression"
     ? unwrapParenthesizedExpression(node.expression)
     : node;
 };
 
+/**
+ * 绑定列表解析标志枚举
+ * 用于控制不同上下文中绑定列表的解析行为
+ */
 export const enum ParseBindingListFlags {
-  ALLOW_EMPTY = 1 << 0,
-  IS_FUNCTION_PARAMS = 1 << 1,
-  IS_CONSTRUCTOR_PARAMS = 1 << 2,
+  ALLOW_EMPTY = 1 << 0, // 允许空元素（如数组解构中的 [,, a]）
+  IS_FUNCTION_PARAMS = 1 << 1, // 是函数参数列表
+  IS_CONSTRUCTOR_PARAMS = 1 << 2, // 是构造函数参数列表
 }
 
+/**
+ * LValParser 抽象类
+ *
+ * 继承自 NodeUtils，专门处理左值（LVal）相关的解析逻辑。
+ * 左值是指可以出现在赋值表达式左侧的值，如变量、属性访问、解构模式等。
+ *
+ * ## 核心职责
+ *
+ * ### 1. 表达式到模式的转换
+ * - toAssignable(): 将表达式转换为可赋值的模式
+ * - toAssignableList(): 批量转换表达式列表
+ * - isAssignable(): 检查表达式是否可赋值
+ *
+ * ### 2. 绑定模式解析
+ * - parseBindingAtom(): 解析基础绑定原子
+ * - parseBindingList(): 解析绑定列表
+ * - parseMaybeDefault(): 解析可能带默认值的绑定
+ *
+ * ### 3. 模式验证
+ * - checkLVal(): 验证左值的合法性
+ * - checkIdentifier(): 检查标识符的合法性
+ * - isValidLVal(): 判断节点类型是否为有效左值
+ *
+ * ### 4. 特殊语法处理
+ * - parseSpread(): 解析展开语法
+ * - parseRestBinding(): 解析剩余绑定
+ * - checkToRestConversion(): 检查到剩余参数的转换
+ */
 export default abstract class LValParser extends NodeUtils {
   // Forward-declaration: defined in expression.js
+  // 前向声明：在 expression.js 中定义
   abstract parseIdentifier(liberal?: boolean): Identifier;
   abstract parseMaybeAssign(
     refExpressionErrors?: ExpressionErrors | null,
@@ -78,6 +156,7 @@ export default abstract class LValParser extends NodeUtils {
   ): void;
   abstract parsePrivateName(): PrivateName;
   // Forward-declaration: defined in statement.js
+  // 前向声明：在 statement.js 中定义
   abstract parseDecorator(): Decorator;
 
   /**
@@ -90,6 +169,16 @@ export default abstract class LValParser extends NodeUtils {
    *
    * NOTE: There is a corresponding "isAssignable" method.
    * When this one is updated, please check if also that one needs to be updated.
+   *
+   * 将现有表达式原子转换为可赋值模式
+   * 如果可能。同时检查无效的解构目标：
+   *
+   * - 带括号的解构模式
+   * - RestElement 不是最后一个元素
+   * - 赋值模式中缺少 `=`
+   *
+   * 注意：有一个对应的“isAssignable”方法。
+   * 更新此方法时，请检查是否也需要更新那个方法。
    *
    * @param node The expression atom
    * @param isLHS Whether we are parsing a LeftHandSideExpression.
@@ -105,6 +194,20 @@ export default abstract class LValParser extends NodeUtils {
         // therefore a parenthesized identifier is ambiguous until we are sure it is an assignment expression
         // i.e. `([(a) = []] = []) => {}`
         // see also `recordArrowParameterBindingError` signature in packages/babel-parser/src/util/expression-scope.js
+        // LHS 可以重新解释为绑定模式，但反之则不行。
+        // 因此，括号内的标识符具有二义性，除非我们确定它是一个赋值表达式。
+        // ✅ 这个可以重新解释：
+        // 先当作表达式：{a, b}（对象）
+        // 后来发现是赋值：{a, b} = obj（解构）
+        // {a, b} = obj;
+        // // ❌ 但这个不能反过来：
+        // // 如果已经确定是绑定模式（比如函数参数）
+        // function fn({a, b}) {
+        //   // 这里的 {a, b} 已经确定是参数解构
+        //   // 不能再"反悔"说它是个普通对象
+        // }
+        // 例如，`([(a) = []] = []) => {}`
+        // 另请参阅 packages/babel-parser/src/util/expression-scope.js 中的 `recordArrowParameterBindingError` 签名
         if (parenthesized.type === "Identifier") {
           this.expressionScope.recordArrowParameterBindingError(
             Errors.InvalidParenthesizedAssignment,
@@ -117,6 +220,9 @@ export default abstract class LValParser extends NodeUtils {
           // A parenthesized member expression can be in LHS but not in pattern.
           // If the LHS is later interpreted as a pattern, `checkLVal` will throw for member expression binding
           // i.e. `([(a.b) = []] = []) => {}`
+          // 带括号的成员表达式可以位于 LHS 中，但不能位于模式中。
+          // 如果 LHS 随后被解释为模式，则 `checkLVal` 将因成员表达式绑定而抛出。
+          // 即 `([(a.b) = []] = []) => {}`
           this.raise(Errors.InvalidParenthesizedAssignment, node);
         }
       } else {
@@ -206,6 +312,14 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 将对象表达式的属性转换为可赋值的属性
+   * 处理对象解构中的各种属性类型：普通属性、方法、展开属性等
+   *
+   * @param prop 要转换的属性节点
+   * @param isLast 是否为最后一个属性
+   * @param isLHS 是否在左手侧表达式中
+   */
   toAssignableObjectExpressionProp(
     prop: Node,
     isLast: boolean,
@@ -233,7 +347,16 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Convert list of expression atoms to binding list.
+  // 将表达式原子列表转换为绑定列表
 
+  /**
+   * 将表达式列表转换为可赋值的列表
+   * 主要用于数组解构模式的处理
+   *
+   * @param exprList 表达式列表
+   * @param trailingCommaLoc 尾随逗号的位置（用于错误报告）
+   * @param isLHS 是否在左手侧表达式中
+   */
   toAssignableList(
     exprList: (
       | Expression
@@ -264,6 +387,14 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 转换列表中的单个项目为可赋值项目
+   * 处理展开元素到剩余元素的转换
+   *
+   * @param exprList 表达式列表
+   * @param index 当前项目的索引
+   * @param isLHS 是否在左手侧表达式中
+   */
   toAssignableListItem(
     exprList: (
       | Expression
@@ -286,6 +417,14 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 检查节点是否可以作为赋值目标
+   * 这是 toAssignable 方法的只读版本，不会修改节点
+   *
+   * @param node 要检查的节点
+   * @param isBinding 是否在绑定上下文中（如变量声明）
+   * @returns 是否可赋值
+   */
   isAssignable(node: Node, isBinding?: boolean): boolean {
     switch (node.type) {
       case "Identifier":
@@ -334,7 +473,16 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Convert list of expression atoms to a list of
+  // 将表达式原子列表转换为引用列表
 
+  /**
+   * 将表达式列表转换为引用列表
+   * 在某些上下文中，需要将表达式解释为引用而非绑定
+   *
+   * @param exprList 表达式列表
+   * @param isParenthesizedExpr 是否为括号表达式
+   * @returns 转换后的引用列表
+   */
   toReferencedList(
     exprList:
       | ReadonlyArray<
@@ -355,6 +503,13 @@ export default abstract class LValParser extends NodeUtils {
     return exprList;
   }
 
+  /**
+   * 深度转换表达式列表为引用列表
+   * 递归处理嵌套的数组表达式
+   *
+   * @param exprList 表达式列表
+   * @param isParenthesizedExpr 是否为括号表达式
+   */
   toReferencedListDeep(
     exprList:
       | ReadonlyArray<
@@ -375,7 +530,15 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Parses spread element.
+  // 解析展开元素
 
+  /**
+   * 解析展开语法 (...expression)
+   * 用于数组展开、对象展开、函数调用参数展开等
+   *
+   * @param refExpressionErrors 表达式错误引用
+   * @returns 展开元素节点
+   */
   parseSpread(
     this: Parser,
     refExpressionErrors?: ExpressionErrors | null,
@@ -390,6 +553,12 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // https://tc39.es/ecma262/#prod-BindingRestElement
+  /**
+   * 解析绑定剩余元素 (...identifier)
+   * 遵循 ECMAScript 规范中的 BindingRestElement 产生式
+   *
+   * @returns 剩余元素节点
+   */
   parseRestBinding(this: Parser): RestElement {
     const node = this.startNode<RestElement>();
     this.next(); // eat `...`
@@ -402,6 +571,14 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Parses lvalue (assignable) atom.
+  // 解析左值（可赋值）原子
+
+  /**
+   * 解析绑定原子 - 最基本的绑定单元
+   * 可以是标识符、数组模式、对象模式或 void 模式
+   *
+   * @returns 模式节点
+   */
   parseBindingAtom(this: Parser): Pattern {
     // https://tc39.es/ecma262/#prod-BindingPattern
     switch (this.state.type) {
@@ -558,12 +735,31 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Used by flow/typescript plugin to add type annotations to binding elements
+  // 由 Flow/TypeScript 插件使用，为绑定元素添加类型注解
+
+  /**
+   * 解析函数参数类型
+   * 这个方法在基类中是空实现，由 Flow/TypeScript 插件重写
+   *
+   * @param param 参数模式
+   * @returns 带类型注解的参数模式
+   */
   parseFunctionParamType(param: Pattern): Pattern {
     return param;
   }
 
   // Parses assignment pattern around given atom if possible.
+  // 如果可能的话，解析给定原子周围的赋值模式
   // https://tc39.es/ecma262/#prod-BindingElement
+
+  /**
+   * 解析可能带默认值的绑定模式
+   * 处理如 `a = 1`、`{x} = obj` 这样的默认参数和解构赋值
+   *
+   * @param startLoc 开始位置
+   * @param left 左侧模式（如果已解析）
+   * @returns 模式或赋值模式节点
+   */
   parseMaybeDefault<P extends Pattern>(
     this: Parser,
     startLoc?: Position | null,
@@ -642,6 +838,15 @@ export default abstract class LValParser extends NodeUtils {
   }
 
   // Overridden by the estree plugin
+  // 由 ESTree 插件重写
+
+  /**
+   * 检查表达式是否为可选成员表达式
+   * 在 ESTree 插件中会被重写以支持不同的 AST 格式
+   *
+   * @param expression 要检查的表达式
+   * @returns 是否为可选成员表达式
+   */
   isOptionalMemberExpression(expression: Node): boolean {
     return expression.type === "OptionalMemberExpression";
   }
@@ -785,6 +990,14 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 检查标识符的合法性
+   * 验证严格模式下的保留字限制和绑定规则
+   *
+   * @param at 标识符节点
+   * @param bindingType 绑定类型标志
+   * @param strictModeChanged 严格模式是否发生变化
+   */
   checkIdentifier(
     at: Identifier,
     bindingType: BindingFlag,
@@ -814,10 +1027,24 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 从标识符声明名称到作用域
+   * 将标识符注册到当前作用域中
+   *
+   * @param identifier 标识符节点
+   * @param binding 绑定标志
+   */
   declareNameFromIdentifier(identifier: Identifier, binding: BindingFlag) {
     this.scope.declareName(identifier.name, binding, identifier.loc.start);
   }
 
+  /**
+   * 检查节点是否可以转换为剩余参数
+   * 验证剩余参数语法的合法性
+   *
+   * @param node 要检查的节点
+   * @param allowPattern 是否允许模式
+   */
   checkToRestConversion(node: Node, allowPattern: boolean): void {
     switch (node.type) {
       case "ParenthesizedExpression":
@@ -835,6 +1062,13 @@ export default abstract class LValParser extends NodeUtils {
     }
   }
 
+  /**
+   * 检查剩余参数后是否有逗号
+   * 剩余参数必须是最后一个参数，后面不能有逗号
+   *
+   * @param close 关闭字符的字符码
+   * @returns 是否发现了非法的逗号
+   */
   checkCommaAfterRest(
     close: (typeof charCodes)[keyof typeof charCodes],
   ): boolean {
