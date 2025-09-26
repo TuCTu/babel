@@ -106,6 +106,48 @@ function createKeyword(name: string, options: TokenOptions = {}): TokenType {
   return token;
 }
 
+/**
+ * 创建二元操作符 Token 的便捷工具函数
+ * Convenience function for creating binary operator tokens
+ *
+ * 这个函数是专门用于简化二元操作符创建的工具函数，它自动设置了
+ * 二元操作符必需的属性，避免重复编写配置代码。
+ *
+ * 🎯 主要作用：
+ * 1. 简化二元操作符 token 的创建过程
+ * 2. 自动设置 beforeExpr: true（操作符前可以有表达式）
+ * 3. 统一二元操作符的创建方式，提高代码一致性
+ *
+ * 🔧 自动设置的属性：
+ * • beforeExpr: true - 标记操作符前面可以有表达式
+ * • binop: number - 设置操作符的优先级
+ *
+ * 💡 设计优势：
+ * - 代码简洁：避免重复编写 { beforeExpr, binop } 配置
+ * - 语义清晰：函数名明确表达创建二元操作符的意图
+ * - 一致性保证：确保所有二元操作符都有正确的 beforeExpr 属性
+ * - 维护便利：集中管理二元操作符的创建逻辑
+ *
+ * 📝 使用示例：
+ * ```typescript
+ * // 简洁的写法
+ * logicalOR: createBinop("||", 1)      // 逻辑或，优先级 1
+ * logicalAND: createBinop("&&", 2)     // 逻辑与，优先级 2
+ * equality: createBinop("==", 6)       // 相等比较，优先级 6
+ * relational: createBinop("<", 7)      // 关系比较，优先级 7
+ *
+ * // 等价的完整写法（更冗长）
+ * logicalOR: createToken("||", { beforeExpr: true, binop: 1 })
+ * ```
+ *
+ * 🔢 优先级参考：
+ * 0: |> (管道) < 1: ||,?? (逻辑) < 2: && < 3: | < 4: ^ < 5: &
+ * < 6: == (相等) < 7: <,> (关系) < 8: << (位移) < 9: +,- < 10: *,/,% < 11: **
+ *
+ * @param name - 操作符名称或描述（如 "||", "+/-", "==/!=="）
+ * @param binop - 二元操作符优先级（数字越大优先级越高）
+ * @returns 返回配置好的 token 类型 ID
+ */
 function createBinop(name: string, binop: number) {
   return createToken(name, { beforeExpr, binop });
 }
@@ -299,6 +341,99 @@ function createToken(name: string, options: TokenOptions = {}): TokenType {
   return tokenTypeCounter;
 }
 
+/**
+ * 创建关键字类型 Token 的工厂函数
+ * Factory function for creating keyword-like token types
+ *
+ * 这个函数专门用于创建 JavaScript/TypeScript 中的关键字类型 token，
+ * 与普通的 createToken 函数相比，它具有以下特殊功能：
+ *
+ * 🎯 主要作用：
+ * 1. 创建关键字类型的 token（如 if, for, class, function 等）
+ * 2. 将关键字注册到 keywords Map 中，提供 O(1) 查找性能
+ * 3. 处理向后兼容性，确保与 Babel 7 的 API 兼容
+ *
+ * 🔍 执行流程：
+ * 1. 递增全局 token 计数器
+ * 2. 【关键】将关键字注册到 keywords 映射表中
+ * 3. 添加到各个属性数组中（标签、二元操作符、表达式标记等）
+ * 4. 创建导出类型时使用固定标签 "name"（为了 Babel 7 兼容性）
+ *
+ * 🆚 与 createToken 的区别：
+ * - createToken: 用于普通符号、操作符，不注册关键字
+ * - createKeywordLike: 专用于关键字，会注册到 keywords Map，导出标签固定为 "name"
+ *
+ * 🎯 使用场景：
+ * - 保留关键字：if, else, for, while, function, class 等
+ * - 上下文关键字：async, await, yield, static 等
+ * - 类型关键字：interface, type, declare 等（TypeScript）
+ *
+ * 💡 设计优势：
+ * - 性能优化：通过 keywords Map 提供 O(1) 关键字查找
+ * - 语义区分：将关键字与普通标识符明确区分
+ * - 兼容性保证：确保与 Babel 7 API 的向后兼容性
+ * - 统一管理：所有关键字通过此函数统一创建和管理
+ *
+ * @param name - 关键字名称（如 "if", "class", "function"）
+ * @param options - token 配置选项，包含以下属性：
+ *
+ * 🔧 **options 属性详解**：
+ *
+ * • **startsExpr?: boolean** - 表达式开始标记（最常用）
+ *   - 标记该 token 是否可以作为表达式的开始
+ *   - 用于 yield 表达式的参数解析，决定是否可以作为子表达式
+ *   - 示例：`async function() {}`, `await promise`, `class MyClass {}`
+ *   - 几乎所有关键字都设置为 true
+ *
+ * • **beforeExpr?: boolean** - 表达式前置标记
+ *   - 标记该 token 前面是否可以有表达式
+ *   - 主要用于区分 JSX 标签 `<` 和二元比较操作符 `<`
+ *   - 示例：`obj in array`, `obj instanceof Class`
+ *
+ * • **binop?: number | null** - 二元操作符优先级
+ *   - 定义二元操作符的优先级（数字越大优先级越高）
+ *   - 优先级表：1(||) < 2(&&) < 3(|) < 4(^) < 5(&) < 6(==) < 7(<,in,instanceof) < 8(<<) < 9(+,-) < 10(*,/,%) < 11(**)
+ *   - 示例：`_in: createKeyword("in", { beforeExpr, binop: 7 })`
+ *
+ * • **prefix?: boolean** - 前缀操作符标记
+ *   - 标记该 token 是否可以作为前缀操作符使用
+ *   - 示例：`+number`, `-number`, `++variable`
+ *
+ * • **postfix?: boolean** - 后缀操作符标记
+ *   - 标记该 token 是否可以作为后缀操作符使用
+ *   - 示例：`variable++`, `variable--`
+ *
+ * • **rightAssociative?: boolean** - 右结合性
+ *   - 标记操作符是否为右结合（默认为左结合）
+ *   - 示例：`2 ** 3 ** 2` = `2 ** (3 ** 2)` = `512` (右结合)
+ *
+ * • **isLoop?: boolean** - 循环关键字标记
+ *   - 标记该关键字是否开始一个循环结构
+ *   - 用于解析标签时决定是否允许 `continue` 跳转
+ *   - 示例：`for`, `while`, `do`
+ *
+ * • **isAssign?: boolean** - 赋值操作符标记
+ *   - 标记该 token 是否为赋值操作符
+ *   - 用于解析赋值表达式和模式匹配
+ *   - 示例：`=`, `+=`, `*=`
+ *
+ * • **keyword?: string** - 关键字字符串
+ *   - 指定实际的关键字字符串（通常与 name 参数相同）
+ *   - 用于向后兼容和特殊情况处理
+ *
+ * 📝 **常见使用模式**：
+ * ```typescript
+ * // 大多数关键字只设置 startsExpr
+ * _async: createKeywordLike("async", { startsExpr })
+ * _class: createKeywordLike("class", { startsExpr })
+ *
+ * // 少数关键字同时作为二元操作符
+ * _in: createKeyword("in", { beforeExpr, binop: 7 })
+ * _instanceof: createKeyword("instanceof", { beforeExpr, binop: 7 })
+ * ```
+ *
+ * @returns 返回唯一的 token 类型 ID
+ */
 function createKeywordLike(
   name: string,
   options: TokenOptions = {},
@@ -470,6 +605,19 @@ export const tt = {
   // `isAssign` marks all of `=`, `+=`, `-=` etcetera, which act as
   // binary operators with a very low precedence, that should result
   // in AssignmentExpression nodes.
+  // 运算符。它们带有多种属性，以帮助
+  // 解析器正确使用它们（这些属性的存在
+  // 正是它们被归类为运算符的原因）。
+  //
+  // `binop` 表示该运算符为二元运算符，
+  // 并将参考其优先级。
+  //
+  // `prefix` 和 `postfix` 将运算符标记为前缀或后缀
+  // 一元运算符。
+  //
+  // `isAssign` 标记所有 `=`、`+=`、`-=` 等，这些运算符充当
+  // 优先级非常低的二元运算符，因此应该
+  // 生成 AssignmentExpression 节点。
 
   // start: isAssign
   eq: createToken("=", { beforeExpr, isAssign }),
@@ -477,6 +625,9 @@ export const tt = {
   slashAssign: createToken("_=", { beforeExpr, isAssign }),
   // These are only needed to support % and ^ as a Hack-pipe topic token.
   // When the proposal settles on a token, the others can be merged with
+  // tt.assign.
+  // 这些仅用于支持 % 和 ^ 作为 Hack-pipe 主题令牌。
+  // 当提案确定一个令牌时，其他令牌可以与
   // tt.assign.
   xorAssign: createToken("_=", { beforeExpr, isAssign }),
   moduloAssign: createToken("_=", { beforeExpr, isAssign }),
@@ -488,6 +639,8 @@ export const tt = {
 
   // More possible topic tokens.
   // When the proposal settles on a token, at least one of these may be removed.
+  // 更多可能的主题标记。
+  // 当提案确定一个标记时，至少其中一个可能会被删除。
   doubleCaret: createToken("^^", { startsExpr }),
   doubleAt: createToken("@@", { startsExpr }),
 

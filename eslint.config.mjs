@@ -1,6 +1,6 @@
 // @ts-check
 
-import babelParser from "@babel/eslint-parser/experimental-worker";
+// import babelParser from "@babel/eslint-parser"; // Temporarily disabled due to build issues
 import globals from "globals";
 import js from "@eslint/js";
 // @ts-expect-error no types
@@ -73,7 +73,7 @@ export default [
   pluginRegexp.configs["flat/recommended"],
   {
     languageOptions: {
-      parser: babelParser,
+      // parser: babelParser, // Temporarily disabled due to build issues
       parserOptions: {
         sourceType: "module",
         requireConfigFile: false,
