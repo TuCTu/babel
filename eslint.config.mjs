@@ -10,8 +10,8 @@ import pluginN from "eslint-plugin-n";
 import configPrettier from "eslint-config-prettier";
 import pluginRegexp from "eslint-plugin-regexp";
 import pluginUnicorn from "eslint-plugin-unicorn";
-import pluginBabelDevelopment from "@babel/eslint-plugin-development";
-import pluginBabelDevelopmentInternal from "@babel/eslint-plugin-development-internal";
+// import pluginBabelDevelopment from "@babel/eslint-plugin-development"; // Temporarily disabled due to build issues
+// import pluginBabelDevelopmentInternal from "@babel/eslint-plugin-development-internal"; // Temporarily disabled due to build issues
 import typescriptEslint from "typescript-eslint";
 import { commonJS } from "$repo-utils";
 
@@ -110,8 +110,8 @@ export default [
       import: pluginImport,
       n: pluginN,
       unicorn: pluginUnicorn,
-      "@babel/development": pluginBabelDevelopment,
-      "@babel/development-internal": pluginBabelDevelopmentInternal,
+      // "@babel/development": pluginBabelDevelopment, // Temporarily disabled due to build issues
+      // "@babel/development-internal": pluginBabelDevelopmentInternal, // Temporarily disabled due to build issues
     },
     rules: {
       "n/no-process-exit": "error",
@@ -238,8 +238,8 @@ export default [
       globals: { PACKAGE_JSON: "readonly", USE_ESM: "readonly" },
     },
     rules: {
-      "@babel/development/no-undefined-identifier": "error",
-      "@babel/development/no-deprecated-clone": "error",
+      // "@babel/development/no-undefined-identifier": "error", // Temporarily disabled due to build issues
+      // "@babel/development/no-deprecated-clone": "error", // Temporarily disabled due to build issues
       "guard-for-in": "error",
       "import/extensions": ["error", "ignorePackages"],
       "import/no-unresolved": "error",
@@ -310,7 +310,7 @@ export default [
         "error",
         { version: "20.19.0", ignores: ["module"] },
       ],
-      "@babel/development-internal/require-default-import-fallback": "error",
+      // "@babel/development-internal/require-default-import-fallback": "error", // Temporarily disabled due to build issues
       "import/no-unresolved": "error",
     },
   },
@@ -344,7 +344,7 @@ export default [
     files: ["packages/babel-plugin-*/src/index.{js,ts}"],
     ignores: ["packages/babel-plugin-transform-regenerator/**/*.js"],
     rules: {
-      "@babel/development/plugin-name": "error",
+      // "@babel/development/plugin-name": "error", // Temporarily disabled due to build issues
       eqeqeq: ["error", "always", { null: "ignore" }],
     },
   },

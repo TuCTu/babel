@@ -1,3 +1,34 @@
+/**
+ * Statement Parser - Babel 解析器中的语句解析器核心
+ *
+ * 这个文件定义了 StatementParser 抽象类，是 Babel 解析器中专门负责语句解析的核心组件。
+ * 它继承自 ExpressionParser，负责将 JavaScript/TypeScript 中的各种语句转换为 AST 节点。
+ *
+ * 🎯 主要功能：
+ * 1. 顶层程序解析 - 处理整个文件的解析入口
+ * 2. 语句类型识别与分发 - 根据 token 类型分发到具体解析方法
+ * 3. 控制流语句解析 - if, switch, for, while, do-while 等
+ * 4. 跳转语句解析 - break, continue, return, throw 等
+ * 5. 异常处理解析 - try-catch-finally 语句
+ * 6. 声明语句解析 - var, let, const, function, class 等
+ * 7. 模块语句解析 - import, export 语句
+ * 8. 现代 JS 特性 - 装饰器、using 声明、私有字段等
+ *
+ * 🏗️ 架构特点：
+ * - 继承层次：Tokenizer -> UtilParser -> NodeUtils -> LValParser -> ExpressionParser -> StatementParser
+ * - 递归下降解析：每个语句类型都有对应的解析方法
+ * - 状态管理：作用域、标签、严格模式等状态的管理
+ * - 错误处理：提供详细的错误位置和恢复机制
+ *
+ * 📊 支持的语句类型：
+ * - 控制流：if, switch, for, while, do-while
+ * - 跳转：break, continue, return, throw
+ * - 异常：try-catch-finally
+ * - 声明：var, let, const, function, class
+ * - 模块：import, export
+ * - 其他：with, debugger, 块语句，表达式语句
+ */
+
 import type * as N from "../types.ts";
 import {
   tokenIsIdentifier,
@@ -32,27 +63,47 @@ import type Parser from "./index.ts";
 import { ParseBindingListFlags } from "./lval.ts";
 import { LoopLabelKind } from "../tokenizer/state.ts";
 
+// 标签类型常量 - 用于标识循环和 switch 语句的标签
+// Label type constants - used to identify labels for loops and switch statements
 const loopLabel = { kind: LoopLabelKind.Loop } as const,
   switchLabel = { kind: LoopLabelKind.Switch } as const;
 
+/**
+ * 函数解析标志枚举
+ * Function parsing flags enumeration
+ *
+ * 用于控制函数解析的不同模式和选项
+ * Used to control different modes and options for function parsing
+ */
 export const enum ParseFunctionFlag {
-  Expression = 0b0000,
-  Declaration = 0b0001,
-  HangingDeclaration = 0b0010,
-  NullableId = 0b0100,
-  Async = 0b1000,
+  Expression = 0b0000, // 函数表达式 - Function expression
+  Declaration = 0b0001, // 函数声明 - Function declaration
+  HangingDeclaration = 0b0010, // 悬挂声明 - Hanging declaration (single statement context)
+  NullableId = 0b0100, // 可空标识符 - Nullable identifier (anonymous functions allowed)
+  Async = 0b1000, // 异步函数 - Async function
 }
 
+/**
+ * 语句解析标志枚举
+ * Statement parsing flags enumeration
+ *
+ * 用于控制在不同上下文中允许解析哪些类型的语句
+ * Used to control which types of statements are allowed in different contexts
+ */
 export const enum ParseStatementFlag {
-  StatementOnly = 0b0000,
-  AllowImportExport = 0b0001,
-  AllowDeclaration = 0b0010,
-  AllowFunctionDeclaration = 0b0100,
-  AllowLabeledFunction = 0b1000,
+  StatementOnly = 0b0000, // 仅普通语句 - Only regular statements
+  AllowImportExport = 0b0001, // 允许 import/export - Allow import/export statements
+  AllowDeclaration = 0b0010, // 允许声明语句 - Allow declaration statements
+  AllowFunctionDeclaration = 0b0100, // 允许函数声明 - Allow function declarations
+  AllowLabeledFunction = 0b1000, // 允许标签函数 - Allow labeled functions (Annex B)
 }
 
+// 孤立代理项正则表达式 - 用于检测 Unicode 代理对中的孤立代理项
+// Lone surrogate regex - used to detect lone surrogates in Unicode surrogate pairs
 const loneSurrogate = /[\uD800-\uDFFF]/u;
 
+// 关键字关系操作符正则表达式 - 用于匹配 'in' 或 'instanceof' 关键字
+// Keyword relational operator regex - used to match 'in' or 'instanceof' keywords
 const keywordRelationalOperator = /in(?:stanceof)?/y;
 
 /**
@@ -62,6 +113,63 @@ const keywordRelationalOperator = /in(?:stanceof)?/y;
  * tt.templateNonTail => tt.backquote/tt.braceR + tt.template + tt.dollarBraceL
  * For performance reasons this routine mutates `tokens`, it is okay
  * here since we execute `parseTopLevel` once for every file.
+ *
+ * Babel 7 兼容性 Token 转换器
+ * Babel 7 Compatibility Token Converter
+ *
+ * 🎯 主要作用：
+ * 这个函数是为了向后兼容 Babel 7 而设计的 token 转换器。它将 Babel 8 的内部
+ * token 格式转换为 Babel 7 兼容的格式，确保现有的工具和插件能够正常工作。
+ *
+ * 🔍 核心转换逻辑：
+ *
+ * 1. **私有字段名称转换**：
+ *    - Babel 8 内部：#privateField → 一个 privateName token
+ *    - Babel 7 兼容：#privateField → # (hash token) + privateField (name token)
+ *    - 转换规则：tt.privateName => tt.hash + tt.name
+ *
+ * 2. **模板字符串转换**：
+ *    - 模板尾部：`end` → ` + end + `
+ *    - 模板中间：`start${` → ` + start + ${
+ *    - 模板延续：}middle${ → } + middle + ${
+ *    - 转换规则：
+ *      • tt.templateTail => tt.backQuote + tt.template + tt.backQuote
+ *      • tt.templateNonTail => tt.backQuote/tt.braceR + tt.template + tt.dollarBraceL
+ *
+ * 💡 设计原理：
+ *
+ * • **性能优化**：直接修改原数组而不是创建新数组，减少内存分配
+ * • **版本兼容**：通过环境变量 BABEL_8_BREAKING 控制是否启用兼容模式
+ * • **单次执行**：每个文件只执行一次，性能影响可控
+ * • **生态支持**：让 Babel 7 时代的工具（ESLint、Prettier等）继续工作
+ *
+ * 🔧 转换过程：
+ *
+ * 私有字段转换流程：
+ * 1. 检测 tt.privateName token（如 #field）
+ * 2. 计算位置：hash 符号结束位置 = start + 1
+ * 3. 创建两个新 token：hash token (#) + name token (field)
+ * 4. 替换原 token 并调整索引
+ *
+ * 模板字符串转换流程：
+ * 1. 判断模板类型：templateTail 还是 templateNonTail
+ * 2. 确定边界字符：开始(` 或 })，结束(` 或 ${)
+ * 3. 创建三个 token：开始边界 + 模板内容 + 结束边界
+ * 4. 替换并调整索引：i += 2 跳过新插入的 token
+ *
+ * 🎯 使用场景：
+ * - 工具兼容性：ESLint 插件、Prettier、IDE 语法高亮
+ * - 插件生态：Babel 7 插件继续工作
+ * - 平滑迁移：为生态系统提供升级缓冲
+ *
+ * ⚡ 性能特点：
+ * - 优点：就地修改节省内存，单次执行，条件执行
+ * - 注意：有副作用（修改输入数组），顺序敏感，需要正确的索引管理
+ *
+ * @param tokens - token 数组（包含 Token 和 Comment），会被直接修改
+ * @param input - 输入的源代码字符串，用于确定字符类型
+ * @param startIndex - 开始索引位置，用于计算相对位置
+ * @returns 转换后的 token 数组（与输入是同一个数组）
  */
 function babel7CompatTokens(
   tokens: (Token | N.Comment)[],
@@ -187,14 +295,52 @@ function babel7CompatTokens(
   }
   return tokens;
 }
+/**
+ * StatementParser 抽象类 - 语句解析器核心
+ * StatementParser abstract class - Core statement parser
+ *
+ * 这是 Babel 解析器中负责语句解析的核心类，继承自 ExpressionParser。
+ * 它实现了 JavaScript/TypeScript 中所有类型语句的解析逻辑。
+ *
+ * 🎯 主要职责：
+ * 1. 程序顶层解析 - parseTopLevel(), parseProgram()
+ * 2. 语句分发解析 - parseStatementLike(), parseStatementContent()
+ * 3. 控制流语句 - if, switch, for, while, do-while
+ * 4. 跳转语句 - break, continue, return, throw
+ * 5. 异常处理 - try-catch-finally
+ * 6. 声明语句 - var, let, const, function, class
+ * 7. 模块语句 - import, export
+ * 8. 现代特性 - 装饰器, using 声明, 私有字段
+ *
+ * 🏗️ 解析策略：
+ * - 递归下降解析：每个语句类型有专门的解析方法
+ * - 状态管理：维护作用域、标签、严格模式等状态
+ * - 错误恢复：提供详细的错误信息和恢复机制
+ * - 向后兼容：支持 Babel 7 的 token 格式转换
+ */
 export default abstract class StatementParser extends ExpressionParser {
   // ### Statement parsing
+  // ### 语句解析
 
   // Parse a program. Initializes the parser, reads any number of
   // statements, and wraps them in a Program node.  Optionally takes a
   // `program` argument.  If present, the statements will be appended
   // to its body instead of creating a new node.
+  // 解析程序。初始化解析器，读取任意数量的语句，
+  // 并将它们包装在 Program 节点中。可选地接受 `program` 参数。
+  // 如果存在，语句将被追加到其主体中，而不是创建新节点。
 
+  /**
+   * 解析顶层文件结构 - 解析器入口点
+   * Parse top-level file structure - parser entry point
+   *
+   * 这是解析器的主入口方法，负责解析整个文件的顶层结构。
+   * 它会初始化程序节点，解析所有顶层语句，并处理 token 兼容性转换。
+   *
+   * @param file - 未完成的文件节点
+   * @param program - 未完成的程序节点
+   * @returns 完成的文件节点
+   */
   parseTopLevel(
     this: Parser,
     file: Undone<N.File>,
@@ -218,6 +364,18 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(file, "File");
   }
 
+  /**
+   * 解析程序主体 - 解析程序节点的核心方法
+   * Parse program body - core method for parsing program nodes
+   *
+   * 解析程序的主体部分，包括解释器指令、语句块和模块导出检查。
+   * 处理严格模式、顶层 await 等特性。
+   *
+   * @param program - 未完成的程序节点
+   * @param end - 结束标记类型
+   * @param sourceType - 源码类型（module 或 script）
+   * @returns 完成的程序节点
+   */
   parseProgram(
     this: Parser,
     program: Undone<N.Program>,
@@ -255,6 +413,7 @@ export default abstract class StatementParser extends ExpressionParser {
 
   /**
    * cast a Statement to a Directive. This method mutates input statement.
+   * 将语句转换为指令。此方法会改变输入语句。
    */
   stmtToDirective(stmt: N.ExpressionStatement): N.Directive {
     const directive = this.castNodeTo(stmt, "Directive");
@@ -280,6 +439,15 @@ export default abstract class StatementParser extends ExpressionParser {
     return directive;
   }
 
+  /**
+   * 解析解释器指令 - 解析 shebang 行
+   * Parse interpreter directive - parse shebang line
+   *
+   * 解析文件开头的解释器指令（如 #!/usr/bin/env node），
+   * 如果不存在则返回 null。
+   *
+   * @returns 解释器指令节点或 null
+   */
   parseInterpreterDirective(): N.InterpreterDirective | null {
     if (!this.match(tt.interpreterDirective)) {
       return null;
@@ -291,6 +459,15 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(node, "InterpreterDirective");
   }
 
+  /**
+   * 检查当前是否为 let 声明
+   * Check if current is a let declaration
+   *
+   * 检查当前上下文关键字是否为 'let' 并且后面跟着绑定原子。
+   * 用于区分 let 关键字和 let 标识符。
+   *
+   * @returns 如果是 let 声明则返回 true
+   */
   isLet(): boolean {
     if (!this.isContextual(tt._let)) {
       return false;
@@ -298,6 +475,15 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.hasFollowingBindingAtom();
   }
 
+  /**
+   * 检查当前是否为 using 声明
+   * Check if current is a using declaration
+   *
+   * 检查当前上下文关键字是否为 'using' 并且后面跟着绑定标识符。
+   * using 声明是 ES2023 的资源管理提案特性。
+   *
+   * @returns 如果是 using 声明则返回 true
+   */
   isUsing(): boolean {
     if (!this.isContextual(tt._using)) {
       return false;
@@ -307,6 +493,15 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.chStartsBindingIdentifier(nextCh, next);
   }
 
+  /**
+   * 检查是否为 for-using 循环声明
+   * Check if current is a for-using loop declaration
+   *
+   * 检查当前是否在 for 循环中使用 using 声明。
+   * 需要特殊处理 'for (using of' 的语法歧义。
+   *
+   * @returns 如果是 for-using 声明则返回 true
+   */
   isForUsing(): boolean {
     if (!this.isContextual(tt._using)) {
       return false;
@@ -335,6 +530,15 @@ export default abstract class StatementParser extends ExpressionParser {
     return false;
   }
 
+  /**
+   * 检查当前是否为 await using 声明
+   * Check if current is an await using declaration
+   *
+   * 检查当前是否为异步资源管理的 await using 声明。
+   * 这是 ES2023 异步资源管理提案的特性。
+   *
+   * @returns 如果是 await using 声明则返回 true
+   */
   isAwaitUsing(): boolean {
     if (!this.isContextual(tt._await)) {
       return false;
@@ -350,6 +554,17 @@ export default abstract class StatementParser extends ExpressionParser {
     return false;
   }
 
+  /**
+   * 检查字符是否开始绑定标识符
+   * Check if character starts a binding identifier
+   *
+   * 检查给定位置的字符是否可以开始一个绑定标识符，
+   * 需要排除关系运算符关键字（in, instanceof）。
+   *
+   * @param ch - 字符码
+   * @param pos - 字符位置
+   * @returns 如果字符可以开始绑定标识符则返回 true
+   */
   chStartsBindingIdentifier(ch: number, pos: number) {
     if (isIdentifierStart(ch)) {
       keywordRelationalOperator.lastIndex = pos;
@@ -369,6 +584,15 @@ export default abstract class StatementParser extends ExpressionParser {
     }
   }
 
+  /**
+   * 检查字符是否开始绑定模式
+   * Check if character starts a binding pattern
+   *
+   * 检查字符是否为数组或对象绑定模式的开始字符（[ 或 {）。
+   *
+   * @param ch - 字符码
+   * @returns 如果字符开始绑定模式则返回 true
+   */
   chStartsBindingPattern(ch: number) {
     return (
       ch === charCodes.leftSquareBracket || ch === charCodes.leftCurlyBrace
@@ -378,6 +602,8 @@ export default abstract class StatementParser extends ExpressionParser {
   /**
    * Assuming we have seen a contextual `let` and declaration is allowed, check if it
    * starts a variable declaration so that it should be interpreted as a keyword.
+   * 假设我们看到了上下文 `let`，并且允许声明，检查它是否
+   * 启动了变量声明，因此应该将其解释为关键字。
    */
   hasFollowingBindingAtom(): boolean {
     const next = this.nextTokenStart();
@@ -392,6 +618,9 @@ export default abstract class StatementParser extends ExpressionParser {
    * Assuming we have seen a contextual `using` and declaration is allowed, check if it
    * starts a variable declaration in the same line so that it should be interpreted as
    * a keyword.
+   * 假设我们看到了上下文相关的 `using` 并且允许声明，请检查它是否
+   * 在同一行中启动了变量声明，因此它应该被解释为
+   * 一个关键字。
    */
   hasInLineFollowingBindingIdentifierOrBrace(): boolean {
     const next = this.nextTokenInLineStart();
@@ -402,6 +631,15 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 检查当前作用域是否允许 using 声明
+   * Check if current scope allows using declarations
+   *
+   * using 声明只能在模块中或非顶层作用域中使用，
+   * 且不能在裸露的 case 语句中使用。
+   *
+   * @returns 如果允许 using 声明则返回 true
+   */
   allowsUsing(): boolean {
     return (
       (this.scope.inModule || !this.scope.inTopLevel) &&
@@ -409,6 +647,15 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 解析模块项 - 解析模块级别的语句或声明
+   * Parse module item - parse module-level statements or declarations
+   *
+   * 解析模块中的项目，包括 import/export 语句、声明和带标签的函数。
+   * 遵循 ECMAScript 规范的 ModuleItem 产生式。
+   *
+   * @returns 模块项节点
+   */
   // https://tc39.es/ecma262/#prod-ModuleItem
   parseModuleItem(this: Parser) {
     return this.parseStatementLike(
@@ -417,10 +664,21 @@ export default abstract class StatementParser extends ExpressionParser {
         ParseStatementFlag.AllowFunctionDeclaration |
         // This function is actually also used to parse StatementItems,
         // which with Annex B enabled allows labeled functions.
+        // 此函数实际上也用于解析 StatementItems，
+        // 启用 Annex B  后，允许使用带标签的函数。
         ParseStatementFlag.AllowLabeledFunction,
     );
   }
 
+  /**
+   * 解析语句列表项 - 解析语句列表中的单个项目
+   * Parse statement list item - parse individual item in statement list
+   *
+   * 解析语句列表中的项目，包括声明、函数声明和其他语句。
+   * 遵循 ECMAScript 规范的 StatementListItem 产生式。
+   *
+   * @returns 语句列表项节点
+   */
   // https://tc39.es/ecma262/#prod-StatementListItem
   parseStatementListItem(this: Parser) {
     return this.parseStatementLike(
@@ -432,6 +690,16 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 解析语句或松散的 Annex B 函数声明
+   * Parse statement or sloppy Annex B function declaration
+   *
+   * 在非严格模式下，根据 Annex B 规范解析可能的函数声明。
+   * 处理在语句位置出现的函数声明的兼容性问题。
+   *
+   * @param allowLabeledFunction - 是否允许带标签的函数
+   * @returns 语句或函数声明节点
+   */
   parseStatementOrSloppyAnnexBFunctionDeclaration(
     this: Parser,
     allowLabeledFunction: boolean = false,
@@ -453,12 +721,20 @@ export default abstract class StatementParser extends ExpressionParser {
   // `if (foo) /blah/.exec(foo)`, where looking at the previous token
   // does not help.
   // https://tc39.es/ecma262/#prod-Statement
+
+  // 解析单个语句。
+  //
+  // 如果期望语句并找到斜杠运算符，则解析为
+  // 正则表达式字面量。这是为了处理类似
+  // `if (foo) /blah/.exec(foo)` 的情况，在这些情况下，查看前一个标记
+  // 并没有什么帮助。
   parseStatement(this: Parser) {
     return this.parseStatementLike(ParseStatementFlag.StatementOnly);
   }
 
   // ImportDeclaration and ExportDeclaration are also handled here so we can throw recoverable errors
   // when they are not at the top level
+  // ImportDeclaration 和 ExportDeclaration 也在这里处理，因此当它们不在顶层时，我们可以抛出可恢复的错误
   parseStatementLike(
     this: Parser,
     flags: ParseStatementFlag,
@@ -679,6 +955,10 @@ export default abstract class StatementParser extends ExpressionParser {
     // simply start parsing an expression, and afterwards, if the
     // next token is a colon and the expression was a simple
     // Identifier node, we switch to interpreting it as a label.
+    // 如果语句不是以语句关键字或括号开头，则为 ExpressionStatement 或 LabeledStatement。我们
+    // 只需开始解析表达式，然后，如果
+    // 下一个标记是冒号，并且表达式是一个简单的
+    // 标识符节点，则我们将其解释为标签。
     const maybeName = this.state.value;
     const expr = this.parseExpression();
 
@@ -725,6 +1005,11 @@ export default abstract class StatementParser extends ExpressionParser {
   // the class node (and thus finalizing its comments) changes how comments
   // before the `class` keyword or before the final .start location of the
   // class are attached.
+  // 将装饰器附加到给定的类。
+  // 注意：此方法会更改类的 .start 位置，因此
+  // 可能会影响注释的附加。在完成类节点之前或之后调用此方法（从而完成其注释）会更改注释的附加方式。
+  // 在 `class` 关键字之前或在类的最终 .start 位置之前
+  // 进行附加。
   maybeTakeDecorators<T extends Undone<N.Class>>(
     maybeDecorators: N.Decorator[] | null,
     classNode: T,
@@ -855,6 +1140,17 @@ export default abstract class StatementParser extends ExpressionParser {
     return expr;
   }
 
+  /**
+   * 解析 break/continue 语句
+   * Parse break/continue statement
+   *
+   * 解析 break 或 continue 语句，包括可选的标签。
+   * 验证语句在正确的上下文中使用（循环或 switch）。
+   *
+   * @param node - 未完成的语句节点
+   * @param isBreak - 是否为 break 语句
+   * @returns break 或 continue 语句节点
+   */
   parseBreakContinueStatement(
     node: Undone<N.Node>,
     isBreak: true,
@@ -884,6 +1180,16 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 验证 break/continue 语句的有效性
+   * Verify validity of break/continue statement
+   *
+   * 检查 break/continue 语句是否在有效的上下文中使用，
+   * 包括标签匹配和循环/switch 上下文验证。
+   *
+   * @param node - break/continue 语句节点
+   * @param isBreak - 是否为 break 语句
+   */
   verifyBreakContinue(
     node: Undone<N.BreakStatement | N.ContinueStatement>,
     isBreak: boolean,
@@ -904,6 +1210,15 @@ export default abstract class StatementParser extends ExpressionParser {
     }
   }
 
+  /**
+   * 解析 debugger 语句
+   * Parse debugger statement
+   *
+   * 解析 debugger 语句，这是一个简单的调试断点语句。
+   *
+   * @param node - 未完成的 debugger 语句节点
+   * @returns 完成的 debugger 语句节点
+   */
   parseDebuggerStatement(
     node: Undone<N.DebuggerStatement>,
   ): N.DebuggerStatement {
@@ -912,6 +1227,14 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(node, "DebuggerStatement");
   }
 
+  /**
+   * 解析头部表达式 - 解析括号内的表达式
+   * Parse header expression - parse expression within parentheses
+   *
+   * 解析 if、while、for 等语句头部括号内的表达式。
+   *
+   * @returns 表达式节点
+   */
   parseHeaderExpression(this: Parser): N.Expression {
     this.expect(tt.parenL);
     const val = this.parseExpression();
@@ -919,6 +1242,16 @@ export default abstract class StatementParser extends ExpressionParser {
     return val;
   }
 
+  /**
+   * 解析 do-while 循环语句
+   * Parse do-while loop statement
+   *
+   * 解析 do-while 循环，先执行循环体再检查条件。
+   * 管理循环标签和智能管道主题上下文。
+   *
+   * @param node - 未完成的 do-while 语句节点
+   * @returns 完成的 do-while 语句节点
+   */
   // https://tc39.es/ecma262/#prod-DoWhileStatement
   parseDoWhileStatement(
     this: Parser,
@@ -953,6 +1286,22 @@ export default abstract class StatementParser extends ExpressionParser {
   // part (semicolon immediately after the opening parenthesis), it
   // is a regular `for` loop.
 
+  /**
+   * 解析 for 循环语句 - 处理多种 for 循环类型
+   * Parse for loop statement - handle multiple types of for loops
+   *
+   * 解析各种类型的 for 循环：
+   * - 标准 for 循环：for (init; test; update)
+   * - for-in 循环：for (variable in object)
+   * - for-of 循环：for (variable of iterable)
+   * - for-await-of 循环：for await (variable of asyncIterable)
+   * - for-using 循环：for (using resource of resources)
+   *
+   * 通过解析初始化部分来区分不同类型的循环。
+   *
+   * @param node - 未完成的 for 语句节点
+   * @returns 完成的 for 循环节点
+   */
   parseForStatement(
     this: Parser,
     node: Undone<N.ForStatement | N.ForInOf>,
@@ -1064,6 +1413,18 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.parseFor(node as Undone<N.ForStatement>, init);
   }
 
+  /**
+   * 解析函数声明语句
+   * Parse function declaration statement
+   *
+   * 解析函数声明，包括普通函数和异步函数。
+   * 处理悬挂声明（在单语句上下文中的函数声明）。
+   *
+   * @param node - 未完成的函数声明节点
+   * @param isAsync - 是否为异步函数
+   * @param isHangingDeclaration - 是否为悬挂声明
+   * @returns 完成的函数声明节点
+   */
   // https://tc39.es/ecma262/#prod-HoistableDeclaration
   parseFunctionStatement(
     this: Parser,
@@ -1080,6 +1441,16 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 解析 if 语句
+   * Parse if statement
+   *
+   * 解析 if-else 条件语句，包括测试表达式、then 分支和可选的 else 分支。
+   * 支持 Annex B 中的松散函数声明规则。
+   *
+   * @param node - 未完成的 if 语句节点
+   * @returns 完成的 if 语句节点
+   */
   // https://tc39.es/ecma262/#prod-IfStatement
   parseIfStatement(this: Parser, node: Undone<N.IfStatement>) {
     this.next();
@@ -1093,6 +1464,16 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(node, "IfStatement");
   }
 
+  /**
+   * 解析 return 语句
+   * Parse return statement
+   *
+   * 解析 return 语句，包括可选的返回值表达式。
+   * 验证 return 语句是否在有效的函数上下文中使用。
+   *
+   * @param node - 未完成的 return 语句节点
+   * @returns 完成的 return 语句节点
+   */
   parseReturnStatement(this: Parser, node: Undone<N.ReturnStatement>) {
     if (!this.prodParam.hasReturn) {
       this.raise(Errors.IllegalReturn, this.state.startLoc);
@@ -1114,6 +1495,16 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(node, "ReturnStatement");
   }
 
+  /**
+   * 解析 switch 语句
+   * Parse switch statement
+   *
+   * 解析 switch 语句，包括判别表达式和多个 case/default 分支。
+   * 管理 switch 标签和作用域，验证不能有多个 default 分支。
+   *
+   * @param node - 未完成的 switch 语句节点
+   * @returns 完成的 switch 语句节点
+   */
   // https://tc39.es/ecma262/#prod-SwitchStatement
   parseSwitchStatement(this: Parser, node: Undone<N.SwitchStatement>) {
     this.next();
@@ -1164,6 +1555,16 @@ export default abstract class StatementParser extends ExpressionParser {
     return this.finishNode(node, "SwitchStatement");
   }
 
+  /**
+   * 解析 throw 语句
+   * Parse throw statement
+   *
+   * 解析 throw 语句，包括要抛出的异常表达式。
+   * 验证 throw 关键字后不能有换行符。
+   *
+   * @param node - 未完成的 throw 语句节点
+   * @returns 完成的 throw 语句节点
+   */
   parseThrowStatement(this: Parser, node: Undone<N.ThrowStatement>) {
     this.next();
     if (this.hasPrecedingLineBreak()) {
@@ -1644,6 +2045,21 @@ export default abstract class StatementParser extends ExpressionParser {
   // Parse a function declaration or expression (depending on the
   // ParseFunctionFlag.Declaration flag).
 
+  /**
+   * 解析函数 - 通用函数解析方法
+   * Parse function - generic function parsing method
+   *
+   * 解析函数声明或表达式的通用方法，支持：
+   * - 普通函数和异步函数
+   * - 生成器函数
+   * - 函数声明和函数表达式
+   * - 可选函数名（匿名函数）
+   * - 悬挂声明处理
+   *
+   * @param node - 未完成的函数节点
+   * @param flags - 解析标志位，控制解析模式
+   * @returns 完成的函数节点
+   */
   parseFunction<T extends N.NormalFunction>(
     this: Parser,
     node: Undone<T>,
@@ -1751,6 +2167,18 @@ export default abstract class StatementParser extends ExpressionParser {
   // Parse a class declaration or literal (depending on the
   // `isStatement` parameter).
 
+  /**
+   * 解析类 - 类声明或类表达式
+   * Parse class - class declaration or class expression
+   *
+   * 解析类定义，包括类名、父类、类体等。
+   * 类定义总是在严格模式下执行。
+   *
+   * @param node - 未完成的类节点
+   * @param isStatement - 是否为类声明（否则为类表达式）
+   * @param optionalId - 类名是否可选
+   * @returns 完成的类节点
+   */
   parseClass<T extends N.Class>(
     this: Parser,
     node: Undone<T>,
@@ -1795,6 +2223,21 @@ export default abstract class StatementParser extends ExpressionParser {
     );
   }
 
+  /**
+   * 解析类体 - 解析类的成员定义
+   * Parse class body - parse class member definitions
+   *
+   * 解析类体中的所有成员，包括：
+   * - 方法（普通、静态、私有、异步、生成器）
+   * - 属性（普通、静态、私有）
+   * - 访问器属性（getter、setter）
+   * - 静态初始化块
+   * - 装饰器
+   *
+   * @param hadSuperClass - 是否有父类
+   * @param oldStrict - 之前的严格模式状态
+   * @returns 完成的类体节点
+   */
   // https://tc39.es/ecma262/#prod-ClassBody
   parseClassBody(
     this: Parser,
